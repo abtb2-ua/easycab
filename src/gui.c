@@ -219,7 +219,7 @@ void *update() {
     pthread_mutex_lock(&mut_finishFlag);
     local_finish = finish;
     pthread_mutex_unlock(&mut_finishFlag);
-  } while (!finish);
+  } while (!local_finish);
 
   return NULL;
 }
