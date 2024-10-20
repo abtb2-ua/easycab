@@ -1,0 +1,34 @@
+{
+  "material-icon-theme.files.customClones": [
+    {
+      "name": "entry-points",
+      "base": "rocket",
+      "color": "blue-300",
+      "fileNames": [
+        "EC_Central.c",
+        "EC_Customer.c",
+        "EC_DE.c",
+        "EC_SE.c",
+      ]
+    },
+    {
+      "name": "gui",
+      "base": "exe",
+      "color": "blue-300",
+      "fileNames": [
+        "ncurses_gui.c",
+        "gui.c"
+      ]
+    }
+  ],
+  "material-icon-theme.folders.customClones": [
+    {
+      "name": "playground",
+      "base": "console",
+      "color": "purple-400",
+      "folderNames": [
+        "playground"
+      ]
+    }
+  ]
+}
