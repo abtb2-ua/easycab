@@ -1,12 +1,25 @@
 #include "common.h"
 #include "glib.h"
+#include <librdkafka/rdkafka.h>
+#include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 Address central, kafka;
 int id, listenPort;
+rd_kafka_t *producer;
+rd_kafka_t *consumer;
+Response response;
+Request request;
+
+Coordinate pos;
+Coordinate *obj; // It's a pointer to allow NULL value
 
 void checkArguments(int argc, char *argv[]);
 void authenticate();
+void waitForService();
+void go();
+void nextStep();
 
 int main(int argc, char *argv[]) {
   g_log_set_default_handler(log_handler, NULL);
@@ -14,6 +27,60 @@ int main(int argc, char *argv[]) {
   checkArguments(argc, argv);
 
   authenticate();
+  request.id = id;
+
+  producer = createKafkaAgent(&kafka, RD_KAFKA_PRODUCER);
+  consumer = createKafkaAgent(&kafka, RD_KAFKA_CONSUMER);
+  subscribeToTopics(&consumer, (const char *[]){"responses"}, 1);
+
+  while (true) {
+    waitForService();
+    go();
+  }
+}
+
+void waitForService() {
+  rd_kafka_message_t *msg = NULL;
+
+  while (true) {
+    if (msg != NULL)
+      rd_kafka_message_destroy(msg);
+    if (!(msg = poll_wrapper(consumer, 1000)))
+      continue;
+
+    memcpy(&response, msg->payload, sizeof(response));
+
+    switch (response.subject) {
+    case SERVICE_ACCEPTED:
+      if (response.taxiId != id) {
+        g_debug("Service accepted for taxi %d, but I'm taxi %d",
+                response.taxiId, id);
+        break;
+      }
+
+      obj = malloc(sizeof(Coordinate));
+      memcpy(obj, response.extraArgs, sizeof(Coordinate));
+
+      g_message("Service accepted: moving to (%i, %i) to pick up '%c'", obj->x,
+                obj->y, response.clientId);
+      return;
+
+    default:
+      g_debug("Unhandled subject: %i", response.subject);
+      break;
+    }
+  }
+}
+
+void go() {
+  while (pos.x != obj->x || pos.y != obj->y) {
+    nextStep();
+    g_message("Moving to (%i, %i)", pos.x, pos.y);
+    request.subject = TAXI_MOVE;
+    request.coord = pos;
+    sendEvent(producer, "requests", &request, sizeof(request));
+    sleep(1);
+  }
 }
 
 void checkArguments(int argc, char *argv[]) {
@@ -148,4 +215,33 @@ void authenticate() {
   buffer[0] = EOT;
   write(sock, buffer, BUFFER_SIZE);
   close(sock);
+}
+
+void nextStep() {
+  int possibleMoves[8][2] = {
+      {1, 1}, {1, 0}, {1, -1}, {0, -1}, {-1, -1}, {-1, 0}, {-1, 1}, {0, 1},
+  };
+
+  Coordinate bestPos = {.x = -1, .y = -1};
+  int bestDistance = INT_MAX;
+
+  for (int i = 0; i < 8; i++) {
+    Coordinate newPos = {.x = (pos.x + possibleMoves[i][0]) % 20,
+                         .y = (pos.y + possibleMoves[i][1]) % 20};
+
+    if (newPos.x < 0)
+      newPos.x += 20;
+
+    if (newPos.y < 0)
+      newPos.y += 20;
+
+    int distance = abs(newPos.x - obj->x) + abs(newPos.y - obj->y);
+
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestPos = newPos;
+    }
+  }
+
+  pos = bestPos;
 }

@@ -1,10 +1,9 @@
+#include "common.h"
+#include "glib.h"
 #include "raylib.h"
-#include <pthread.h>
-#include <stdbool.h>
-#include <stdio.h>
+#include <librdkafka/rdkafka.h>
 #include <string.h>
 #include <time.h>
-#include <unistd.h>
 
 // Core parameters (not prepared for customization)
 #define MARGIN 50                             // 50
@@ -23,34 +22,36 @@
 #define FONT_SIZE_3 20
 
 // Styling options
-#define FULL_BACKGROUND false  // false
-#define BACKGROUND_INTENSITY 1 // 1
-#define MAX_FPS 60             // 60
-#define FPS_X 10               // 10
-#define FPS_Y 10               // 10
-#define SEGMENTS 10            // 10
-#define HLABELS 2              // 2
-#define VLABELS 2              // 2
-#define LABELS_GAP 2           // 2
+#define FULL_BACKGROUND false     // false
+#define BACKGROUND_INTENSITY 1.25 // 1
+#define MAX_FPS 60                // 60
+#define FPS_X 10                  // 10
+#define FPS_Y 10                  // 10
+#define SEGMENTS 10               // 10
+#define HLABELS 2                 // 2
+#define VLABELS 2                 // 2
+#define LABELS_GAP 2              // 2
 
 // Globals
 #define min(a, b) ((a) < (b) ? (a) : (b))
 #define max(a, b) ((a) > (b) ? (a) : (b))
 
-struct ColorPalette {
+typedef struct ColorPalette {
   Color border, background;
-};
+} ColorPalette;
 
 struct {
-  struct ColorPalette red, green, blue, yellow, blank;
-} COLORS;
+  ColorPalette red, green, blue, yellow, blank;
+} PALLETES;
 
-struct ColorPalette global_colors[GRID_SIZE][GRID_SIZE];
+ColorPalette global_colors[GRID_SIZE][GRID_SIZE];
 char global_content[GRID_SIZE][GRID_SIZE][4];
 static pthread_mutex_t mut_mapContent = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t mut_finishFlag = PTHREAD_MUTEX_INITIALIZER;
+Address kafka = {.ip = "localhost", .port = 9092};
 bool finish = false;
 
+ColorPalette GetPalette(AGENT_TYPE agent);
 void init();
 void DrawLabels();
 void *update();
@@ -143,21 +144,21 @@ int main() {
 // clang-format on
 
 void init() {
-  COLORS.green =
+  PALLETES.green =
       (struct ColorPalette){.background = Fade(GREEN, .8), .border = DARKGREEN};
-  COLORS.blue =
+  PALLETES.blue =
       (struct ColorPalette){.background = Fade(BLUE, .5), .border = DARKBLUE};
-  COLORS.yellow =
+  PALLETES.yellow =
       (struct ColorPalette){.background = Fade(YELLOW, .8), .border = ORANGE};
-  COLORS.red =
+  PALLETES.red =
       (struct ColorPalette){.background = Fade(RED, .5), .border = MAROON};
-  COLORS.blank =
+  PALLETES.blank =
       (struct ColorPalette){.background = BLANK, .border = Fade(DARKGRAY, .9)};
 
   for (int i = 0; i < GRID_SIZE; i++) {
     for (int j = 0; j < GRID_SIZE; j++) {
       strcpy(global_content[i][j], "");
-      global_colors[i][j] = COLORS.blank;
+      global_colors[i][j] = PALLETES.blank;
     }
   }
 }
@@ -198,21 +199,37 @@ void DrawLabels() {
 }
 
 void *update() {
+  g_log_set_default_handler(log_handler, NULL);
+  rd_kafka_t *consumer = createKafkaAgent(&kafka, RD_KAFKA_CONSUMER);
+  rd_kafka_message_t *msg = NULL;
+  Response response;
   bool local_finish = false;
-  int i = 0;
+
+  subscribeToTopics(&consumer, (const char *[]){"responses"}, 1);
 
   do {
-    pthread_mutex_lock(&mut_mapContent);
-    global_colors[i][i] = COLORS.red;
-    char p[5];
-    sprintf(p, "%d", i);
-    strcpy(global_content[i][i], p);
-    i++;
-    pthread_mutex_unlock(&mut_mapContent);
+    if (msg != NULL)
+      rd_kafka_message_destroy(msg);
+    if (!(msg = poll_wrapper(consumer, 1000)))
+      continue;
 
-    if (i == GRID_SIZE) {
-      i = 0;
+    g_debug("Reading message");
+
+    memcpy(&response, msg->payload, sizeof(response));
+
+    pthread_mutex_lock(&mut_mapContent);
+    for (int i = 0; i < GRID_SIZE; i++) {
+      for (int j = 0; j < GRID_SIZE; j++) {
+        global_colors[i][j] = GetPalette(response.map[i][j].agent);
+        strcpy(global_content[i][j], response.map[i][j].str);
+      }
     }
+    // global_colors[i][i] = PALLETES.red;
+    // char p[5];
+    // sprintf(p, "%d", i);
+    // strcpy(global_content[i][i], p);
+    // i++;
+    pthread_mutex_unlock(&mut_mapContent);
 
     sleep(1);
 
@@ -222,4 +239,19 @@ void *update() {
   } while (!local_finish);
 
   return NULL;
+}
+
+ColorPalette GetPalette(AGENT_TYPE agent) {
+  switch (agent) {
+  case TAXI:
+    return PALLETES.green;
+  case TAXI_STOPPED:
+    return PALLETES.red;
+  case CLIENT:
+    return PALLETES.yellow;
+  case LOCATION:
+    return PALLETES.blue;
+  default:
+    return PALLETES.blank;
+  }
 }

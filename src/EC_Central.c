@@ -1,21 +1,22 @@
-
 #include "common.h"
-#include "glib.h"
 #include "kafka_module.h"
 #include "ncurses_gui.h"
 #include "socket_module.h"
-#include <time.h>
-#include <unistd.h>
+#include <ncurses.h>
+
+#define RESET_DB true
+#define FILE_NAME "res/locations.csv"
 
 Address kafka, db;
 int gui_pipe[2];
 
 void checkArguments(int argc, char *argv[], int *listenPort);
+void readFile();
+void read_error(const char *format, ...);
 
 int main(int argc, char *argv[]) {
-  // g_log_set_default_handler(log_handler, NULL);
-  // listenSocket(8000);
-  // exit(0);
+  // startKafkaServer();
+  // return 0;
 
   int listenPort;
   char buffer[BUFFER_SIZE];
@@ -61,14 +62,9 @@ int main(int argc, char *argv[]) {
   memcpy(buffer + 1, (pid_t[]){getpid()}, sizeof(pid_t));
   write(gui_pipe[1], buffer, BUFFER_SIZE);
 
-  while (true) {
-    g_message("GUI process created with PID %i", getpid());
-    usleep(1100 * 1000);
-  }
+  readFile();
 
-  write(gui_pipe[1], (char[]){PGUI_END_EXECUTION}, BUFFER_SIZE);
-  close(gui_pipe[1]);
-  return 0;
+  startKafkaServer();
 }
 
 void checkArguments(int argc, char *argv[], int *listenPort) {
@@ -97,4 +93,67 @@ void checkArguments(int argc, char *argv[], int *listenPort) {
 
   if (db.port < 1 || db.port > 65535)
     g_error("Invalid database port. %s", usage);
+}
+
+void read_error(const char *format, ...) {
+  va_list args;
+  va_start(args, format);
+  g_critical(format, args);
+  va_end(args);
+
+  char buffer[BUFFER_SIZE];
+  buffer[0] = PGUI_END_EXECUTION;
+  write(gui_pipe[1], buffer, BUFFER_SIZE);
+  close(gui_pipe[1]);
+  exit(1);
+}
+
+void readFile() {
+  FILE *file = fopen(FILE_NAME, "r");
+  if (file == NULL) {
+    read_error("Error opening file %s", FILE_NAME);
+  }
+
+  mysql_library_init(0, NULL, NULL);
+  MYSQL *conn = mysql_init(NULL);
+  mysql_options(conn, MYSQL_OPT_CONNECT_TIMEOUT, (int[]){2});
+
+  if (!mysql_real_connect(conn, db.ip, "root", DB_PASSWORD, DB_NAME, db.port,
+                          NULL, 0)) {
+    read_error("Error connecting to database");
+  }
+
+  char line[10];
+  int x, y;
+  char id;
+  char query[200];
+  int counter = 0;
+
+  if (RESET_DB) {
+    sprintf(query, "CALL ResetDB();");
+    if (mysql_query(conn, query)) {
+      g_warning("Error reseting database: %s", mysql_error(conn));
+    }
+  }
+
+  while (fgets(line, 10, file) != NULL) {
+    sscanf(line, "%c,%d,%d", &id, &x, &y);
+
+    sprintf(query, "INSERT INTO locations (id, x, y) VALUES ('%c', %d, %d)", id,
+            x, y);
+
+    if (mysql_query(conn, query)) {
+      g_warning("Error inserting locations %c (%d, %d): %s", id, x, y,
+                mysql_error(conn));
+      continue;
+    }
+
+    g_debug("Stored locations %c (%d, %d)", id, x, y);
+    counter++;
+  }
+
+  g_message("%i locations read and stored successfully", counter);
+  mysql_close(conn);
+  mysql_library_end();
+  fclose(file);
 }

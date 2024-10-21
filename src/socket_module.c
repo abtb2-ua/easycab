@@ -1,11 +1,16 @@
 #include "socket_module.h"
+#include "common.h"
 #include "glib.h"
+#include <librdkafka/rdkafka.h>
 #include <mysql/mysql.h>
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 
-extern Address db;
+extern Address kafka, db;
 extern int gui_pipe[2];
+static rd_kafka_t *producer;
+Request request;
 
 void listenSocket(int listenPort) {
   int serverSocket = openSocket(listenPort);
@@ -85,8 +90,8 @@ void attend(void *args) {
     case ENQ:
       g_debug("%sReceived ENQ", prefix);
       if (conn != NULL && mysql_ping(conn) &&
-          mysql_real_connect(conn, db.ip, "root", "1234", "db", db.port, NULL,
-                             0)) {
+          mysql_real_connect(conn, db.ip, "root", DB_PASSWORD, DB_NAME, db.port,
+                             NULL, 0)) {
         g_debug("%sSent ACK", prefix);
         buffer[0] = ACK;
       } else {
@@ -102,17 +107,23 @@ void attend(void *args) {
       int id;
       memcpy(&id, buffer + 1, sizeof(id));
 
-      if (conn != NULL) {
-        buffer[1] = checkId(conn, id);
+      int newId = conn != NULL ? checkId(conn, id) : -1;
+
+      if (newId != -1) {
+        g_message("%sAssigned ID %i", prefix, newId);
       } else {
-        buffer[1] = -1;
+        g_warning("%sCouldn't assign ID %i. No more IDs available.", prefix,
+                  id);
       }
 
-      if (buffer[1] == id) {
-        buffer[0] = ACK;
-      } else {
-        buffer[0] = NACK;
-      }
+      producer = createKafkaAgent(&kafka, RD_KAFKA_PRODUCER);
+      request.subject = NEW_TAXI;
+      request.id = id + TAXI_ID_OFFSET;
+      sendEvent(producer, "requests", &request, sizeof(request));
+      g_message("Updated map");
+
+      buffer[0] = newId == id ? ACK : NACK;
+      memcpy(buffer + 1, &newId, sizeof(id));
 
       write(clientSocket, buffer, BUFFER_SIZE);
       break;
@@ -133,9 +144,22 @@ void attend(void *args) {
 }
 
 int checkId(MYSQL *conn, int id) {
-  MYSQL_RES *result, *result2;
+  MYSQL_RES *result = NULL;
+  MYSQL_RES *result2 = NULL;
   MYSQL_ROW row;
   char query[100];
+
+#define SAVE_ID(_id)                                                           \
+  {                                                                            \
+    mysql_free_result(result);                                                 \
+    mysql_free_result(result2);                                                \
+    sprintf(query, "INSERT INTO taxis (id) VALUES (%i)", _id);                 \
+    if (mysql_query(conn, query)) {                                            \
+      g_warning("Error inserting id: %s\n", mysql_error(conn));                \
+      return -1;                                                               \
+    }                                                                          \
+    return _id;                                                                \
+  }
 
   sprintf(query, "SELECT id FROM taxis WHERE id = %i", id);
   if (mysql_query(conn, query)) {
@@ -146,12 +170,7 @@ int checkId(MYSQL *conn, int id) {
   result = mysql_store_result(conn);
 
   if (mysql_num_rows(result) == 0) {
-    sprintf(query, "INSERT INTO taxis (id) VALUES (%i)", id);
-    if (mysql_query(conn, query)) {
-      g_warning("Error inserting id: %s\n", mysql_error(conn));
-      return -1;
-    }
-    return id;
+    SAVE_ID(id);
   }
 
   sprintf(query, "SELECT id FROM taxis");
@@ -164,15 +183,12 @@ int checkId(MYSQL *conn, int id) {
   result2 = mysql_store_result(conn);
   while ((row = mysql_fetch_row(result2))) {
     if (i != atoi(row[0])) {
-      sprintf(query, "INSERT INTO taxis (id) VALUES (%i)", i);
-      if (mysql_query(conn, query)) {
-        g_warning("Error inserting id: %s\n", mysql_error(conn));
-        return -1;
-      }
-      return i;
+      SAVE_ID(i);
     }
     i++;
   }
 
-  return -1;
+  if (i >= 100)
+    return -1;
+  SAVE_ID(i);
 }

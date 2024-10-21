@@ -26,24 +26,25 @@ execute_process(
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
-add_executable(gui src/gui.c)
+add_executable(gui src/gui.c src/common.c)
 add_executable(EC_Central src/EC_Central.c src/ncurses_gui.c src/common.c src/kafka_module.c src/socket_module.c)  
 add_executable(EC_DE src/EC_DE.c src/common.c)
+add_executable(EC_Customer src/EC_Customer.c src/common.c)
 
-target_include_directories(gui PRIVATE ${GLIB_INCLUDE_DIRS} ${RAYLIB_INCLUDE_DIRS})
+target_include_directories(gui PRIVATE ${GLIB_INCLUDE_DIRS} ${RAYLIB_INCLUDE_DIRS} ${KAFKA_INCLUDE_DIRS} ${UUID_INCLUDE_DIRS})
 target_include_directories(EC_Central PRIVATE ${GLIB_INCLUDE_DIRS} ${MYSQL_INCLUDE_DIRS} 
                             ${KAFKA_INCLUDE_DIRS} ${NCURSES_INCLUDE_DIRS} ${UUID_INCLUDE_DIRS})
-# target_include_directories(EC_DE PRIVATE ${GLIB_INCLUDE_DIRS} ${KAFKA_INCLUDE_DIRS} ${UUID_INCLUDE_DIRS})
 target_include_directories(EC_DE PRIVATE ${GLIB_INCLUDE_DIRS} ${KAFKA_INCLUDE_DIRS} ${UUID_INCLUDE_DIRS})
+target_include_directories(EC_Customer PRIVATE ${GLIB_INCLUDE_DIRS} ${KAFKA_INCLUDE_DIRS} ${UUID_INCLUDE_DIRS})
 
-target_link_libraries(gui PRIVATE ${GLIB_LIBRARIES} ${RAYLIB_LIBRARIES} Threads::Threads)
+target_link_libraries(gui PRIVATE ${GLIB_LIBRARIES} ${RAYLIB_LIBRARIES} Threads::Threads ${KAFKA_LIBRARIES} ${UUID_LIBRARIES})
 target_link_libraries(EC_Central PRIVATE ${GLIB_LIBRARIES} Threads::Threads ${MYSQL_LIBS} 
                         ${KAFKA_LIBRARIES} ${NCURSES_LIBRARIES} ${UUID_LIBRARIES})
 target_link_libraries(EC_DE PRIVATE ${GLIB_LIBRARIES} Threads::Threads ${KAFKA_LIBRARIES} ${UUID_LIBRARIES})
-# target_include_directories(EC_DE PRIVATE ${GLIB_LIBRARIES} Threads::Threads ${KAFKA_LIBRARIES} ${UUID_LIBRARIES})
+target_link_libraries(EC_Customer PRIVATE ${GLIB_LIBRARIES} Threads::Threads ${KAFKA_LIBRARIES} ${UUID_LIBRARIES})
 
-target_compile_options(gui PRIVATE ${GLIB_CFLAGS_OTHER} ${RAYLIB_CFLAGS_OTHER})
+target_compile_options(gui PRIVATE ${GLIB_CFLAGS_OTHER} ${RAYLIB_CFLAGS_OTHER} ${KAFKA_CFLAGS_OTHER} ${UUID_CFLAGS_OTHER})
 target_compile_options(EC_Central PRIVATE ${GLIB_CFLAGS_OTHER} ${MYSQL_CFLAGS} 
                         ${KAFKA_CFLAGS_OTHER} ${NCURSES_CFLAGS_OTHER} ${UUID_CFLAGS_OTHER})
 target_compile_options(EC_DE PRIVATE ${GLIB_CFLAGS_OTHER} ${KAFKA_CFLAGS_OTHER} ${UUID_CFLAGS_OTHER}) 
-# target_compile_options(EC_DE PRIVATE ${GLIB_CFLAGS_OTHER} ${KAFKA_CFLAGS_OTHER} ${UUID_CFLAGS_OTHER})
+target_compile_options(EC_Customer PRIVATE ${GLIB_CFLAGS_OTHER} ${KAFKA_CFLAGS_OTHER} ${UUID_CFLAGS_OTHER}) 
