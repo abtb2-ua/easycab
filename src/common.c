@@ -175,8 +175,8 @@ rd_kafka_t *createKafkaAgent(Address *serverAddress, rd_kafka_type_t type) {
     rd_kafka_poll_set_consumer(agent);
   }
 
-  g_message("%s named %s created",
-            type == RD_KAFKA_PRODUCER ? "Producer" : "Consumer", client_id);
+  g_debug("%s named %s created",
+          type == RD_KAFKA_PRODUCER ? "Producer" : "Consumer", client_id);
 
   return agent;
 }
@@ -252,7 +252,7 @@ rd_kafka_message_t *poll_wrapper(rd_kafka_t *rk, int timeout_ms) {
   }
 
   if (msg->err) {
-    g_debug("Error: %s", rd_kafka_message_errstr(msg));
+    g_warning("Error: %s", rd_kafka_message_errstr(msg));
     return NULL;
   }
 

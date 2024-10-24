@@ -10,7 +10,11 @@ rd_kafka_t *consumer;
 char id;
 Request request;
 Response response;
-Coordinate pos = {.x = 8, .y = 12};
+Coordinate pos;
+
+void sendRequest() {
+  sendEvent(producer, "requests", &request, sizeof(request));
+}
 
 void checkArguments(int argc, char *argv[]);
 
@@ -24,11 +28,35 @@ int main(int argc, char *argv[]) {
   consumer = createKafkaAgent(&kafka, RD_KAFKA_CONSUMER);
   subscribeToTopics(&consumer, (const char *[]){"responses"}, 1);
 
-  request.subject = ASK_FOR_SERVICE;
+  request.subject = NEW_CLIENT;
   request.id = id;
   request.coord = pos;
-  char obj = 'H';
-  request.extraArgs[0] = obj;
+  sendRequest();
+
+  g_message("Waiting for confirmation");
+  while (true) {
+    if (!(msg = poll_wrapper(consumer, 1000)))
+      continue;
+
+    memcpy(&response, msg->payload, sizeof(response));
+
+    if (response.clientId != id ||
+        (response.subject != CONFIRMATION && response.subject != ERROR)) {
+      g_debug("Id received: %c", response.clientId);
+      g_debug("Subject received: %i", response.subject);
+      continue;
+    }
+
+    if (response.subject == ERROR)
+      g_error("Central rejected the connection");
+
+    g_message("Central accepted the connection");
+    break;
+  }
+
+  request.subject = ASK_FOR_SERVICE;
+  request.coord = pos;
+  request.extraArgs[0] = 'F';
 
   sendEvent(producer, "requests", &request, sizeof(request));
 
@@ -47,6 +75,9 @@ int main(int argc, char *argv[]) {
     case SERVICE_DENIED:
       g_message("Service denied");
       break;
+    case CONFIRMATION:
+      g_message("Confirmation received");
+      break;
     default:
       g_debug("Unhandled subject: %i", response.subject);
       break;
@@ -57,9 +88,9 @@ int main(int argc, char *argv[]) {
 void checkArguments(int argc, char *argv[]) {
   char usage[100];
 
-  sprintf(usage, "Usage: %s <Kafka IP:Port> <ID>", argv[0]);
+  sprintf(usage, "Usage: %s <Kafka IP:Port> <ID> <x> <y>", argv[0]);
 
-  if (argc < 3) {
+  if (argc < 5) {
     g_error("%s", usage);
   }
 
@@ -68,6 +99,12 @@ void checkArguments(int argc, char *argv[]) {
 
   if (sscanf(argv[2], "%c", &id) != 1)
     g_error("Invalid id. %s", usage);
+
+  if (sscanf(argv[3], "%i", &pos.x) != 1)
+    g_error("Invalid x. %s", usage);
+
+  if (sscanf(argv[4], "%i", &pos.y) != 1)
+    g_error("Invalid y. %s", usage);
 
   if (id < 'a' || id > 'z')
     g_error("Invalid id, must be between 'a' and 'z'. %s", usage);

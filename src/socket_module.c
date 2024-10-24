@@ -91,7 +91,7 @@ void attend(void *args) {
       g_debug("%sReceived ENQ", prefix);
       if (conn != NULL && mysql_ping(conn) &&
           mysql_real_connect(conn, db.ip, "root", DB_PASSWORD, DB_NAME, db.port,
-                             NULL, 0)) {
+                             NULL, CLIENT_MULTI_STATEMENTS)) {
         g_debug("%sSent ACK", prefix);
         buffer[0] = ACK;
       } else {
@@ -111,16 +111,16 @@ void attend(void *args) {
 
       if (newId != -1) {
         g_message("%sAssigned ID %i", prefix, newId);
+
+        producer = createKafkaAgent(&kafka, RD_KAFKA_PRODUCER);
+        request.subject = NEW_TAXI;
+        request.id = id;
+        sendEvent(producer, "requests", &request, sizeof(request));
+        g_message("Updated map");
       } else {
         g_warning("%sCouldn't assign ID %i. No more IDs available.", prefix,
                   id);
       }
-
-      producer = createKafkaAgent(&kafka, RD_KAFKA_PRODUCER);
-      request.subject = NEW_TAXI;
-      request.id = id + TAXI_ID_OFFSET;
-      sendEvent(producer, "requests", &request, sizeof(request));
-      g_message("Updated map");
 
       buffer[0] = newId == id ? ACK : NACK;
       memcpy(buffer + 1, &newId, sizeof(id));
@@ -147,7 +147,7 @@ int checkId(MYSQL *conn, int id) {
   MYSQL_RES *result = NULL;
   MYSQL_RES *result2 = NULL;
   MYSQL_ROW row;
-  char query[100];
+  char query[300];
 
 #define SAVE_ID(_id)                                                           \
   {                                                                            \
@@ -161,26 +161,21 @@ int checkId(MYSQL *conn, int id) {
     return _id;                                                                \
   }
 
-  sprintf(query, "SELECT id FROM taxis WHERE id = %i", id);
+  sprintf(query, "SELECT id FROM taxis WHERE id = %i;", id);
+  sprintf(query + strlen(query), "SELECT id FROM taxis;");
   if (mysql_query(conn, query)) {
     g_warning("Error checking id: %s\n", mysql_error(conn));
     return -1;
   }
 
-  result = mysql_store_result(conn);
+  store_result_wrapper(result);
+  store_result_wrapper(result2);
 
   if (mysql_num_rows(result) == 0) {
     SAVE_ID(id);
   }
 
-  sprintf(query, "SELECT id FROM taxis");
-  if (mysql_query(conn, query)) {
-    g_warning("Error checking id: %s\n", mysql_error(conn));
-    return -1;
-  }
-
   int i = 0;
-  result2 = mysql_store_result(conn);
   while ((row = mysql_fetch_row(result2))) {
     if (i != atoi(row[0])) {
       SAVE_ID(i);

@@ -9,7 +9,11 @@ void loadMap();
 void initConnection();
 void init();
 void cleanUp();
-void moveTaxi();
+void moveTaxi(Request *request);
+void insertClient(Request *request);
+void processServiceRequest(Request *request);
+void pickUpClient(Request *request);
+void completeService(Request *request);
 bool assignTaxi(char clientId, Coordinate clientCoord);
 
 #endif

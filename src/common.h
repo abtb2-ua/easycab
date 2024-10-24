@@ -23,12 +23,13 @@
 
 #define BUFFER_SIZE 300
 #define GRID_SIZE 20
-// So that we can store location and client's ids as numbers and they don't
-// overlap with taxi ids
-#define TAXI_ID_OFFSET 150
 
 #define DB_NAME "db"
 #define DB_PASSWORD "1234"
+
+#define store_result_wrapper(result)                                           \
+  result = mysql_store_result(conn);                                           \
+  mysql_next_result(conn);
 
 enum COLORS {
   PASTEL_RED = 100,
@@ -58,11 +59,19 @@ typedef enum AGENT_TYPE {
 
 typedef enum SUBJECT {
   NEW_TAXI,
+  NEW_CLIENT,
+  ERROR,
+  CONFIRMATION,
   ASK_FOR_SERVICE,
   TAXI_MOVE,
   MAP_UPDATE,
+  // Used as response. Extra args: client's coordinates, client's destination
+  // Coordinates
   SERVICE_ACCEPTED,
   SERVICE_DENIED,
+  // Used as reuest.
+  CLIENT_PICKED_UP,
+  SERVICE_COMPLETED,
 } SUBJECT;
 
 typedef struct Coordinate {
@@ -88,7 +97,6 @@ typedef struct Request {
 
 typedef struct Response {
   SUBJECT subject;
-  AGENT_TYPE adressee;
   Cell map[GRID_SIZE][GRID_SIZE];
   char taxiId, clientId;
   char extraArgs[20];

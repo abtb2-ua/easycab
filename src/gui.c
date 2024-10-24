@@ -80,8 +80,8 @@ int main() {
 
   for (int i = 0; i < GRID_SIZE; i++) {
     for (int j = 0; j < GRID_SIZE; j++) {
-      cells[i][j].x = MARGIN + (float)GUTTER / 2 + i * CELL_SIZE;
-      cells[i][j].y = MARGIN + (float)GUTTER / 2 + j * CELL_SIZE;
+      cells[i][j].y = MARGIN + (float)GUTTER / 2 + i * CELL_SIZE;
+      cells[i][j].x = MARGIN + (float)GUTTER / 2 + j * CELL_SIZE;
       cells[i][j].width = CELL_SIZE - GUTTER;
       cells[i][j].height = CELL_SIZE - GUTTER;
     }
@@ -121,8 +121,8 @@ int main() {
         Vector2 v = MeasureTextEx(font, content[i][j], fontSize, 2);
         DrawTextEx(
             font, content[i][j],
-            (Vector2){(int)(MARGIN + i * CELL_SIZE + CELL_SIZE / 2. - v.x / 2),
-                      (int)(MARGIN + j * CELL_SIZE + CELL_SIZE / 2. - v.y / 2)},
+            (Vector2){(int)(MARGIN + j * CELL_SIZE + CELL_SIZE / 2. - v.x / 2),
+                      (int)(MARGIN + i * CELL_SIZE + CELL_SIZE / 2. - v.y / 2)},
             fontSize, LETTER_SPACING, DARKGRAY);
       }
     }
@@ -203,6 +203,8 @@ void *update() {
   rd_kafka_t *consumer = createKafkaAgent(&kafka, RD_KAFKA_CONSUMER);
   rd_kafka_message_t *msg = NULL;
   Response response;
+  ColorPalette colors[GRID_SIZE][GRID_SIZE];
+  char content[GRID_SIZE][GRID_SIZE][4];
   bool local_finish = false;
 
   subscribeToTopics(&consumer, (const char *[]){"responses"}, 1);
@@ -217,21 +219,17 @@ void *update() {
 
     memcpy(&response, msg->payload, sizeof(response));
 
-    pthread_mutex_lock(&mut_mapContent);
     for (int i = 0; i < GRID_SIZE; i++) {
       for (int j = 0; j < GRID_SIZE; j++) {
-        global_colors[i][j] = GetPalette(response.map[i][j].agent);
-        strcpy(global_content[i][j], response.map[i][j].str);
+        colors[i][j] = GetPalette(response.map[i][j].agent);
+        strcpy(content[i][j], response.map[i][j].str);
       }
     }
-    // global_colors[i][i] = PALLETES.red;
-    // char p[5];
-    // sprintf(p, "%d", i);
-    // strcpy(global_content[i][i], p);
-    // i++;
-    pthread_mutex_unlock(&mut_mapContent);
 
-    sleep(1);
+    pthread_mutex_lock(&mut_mapContent);
+    memcpy(global_colors, colors, sizeof(colors));
+    memcpy(global_content, content, sizeof(content));
+    pthread_mutex_unlock(&mut_mapContent);
 
     pthread_mutex_lock(&mut_finishFlag);
     local_finish = finish;

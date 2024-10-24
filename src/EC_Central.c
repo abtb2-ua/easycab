@@ -1,4 +1,5 @@
 #include "common.h"
+#include "glib.h"
 #include "kafka_module.h"
 #include "ncurses_gui.h"
 #include "socket_module.h"
@@ -39,18 +40,16 @@ int main(int argc, char *argv[]) {
   int args[2] = {PGUI_WRITE_TOP_WINDOW, gui_pipe[1]};
   g_log_set_default_handler(ncurses_log_handler, args);
 
+  // signal(SIGINT, exit);
   if (pid == 0) { // Child
+    args[0] = PGUI_WRITE_BOTTOM_WINDOW;
+    g_log_set_default_handler(ncurses_log_handler, args);
 
+    g_debug("process with PID %i", getpid());
     buffer[0] = PGUI_REGISTER_PROCESS;
     memcpy(buffer + 1, (pid_t[]){getpid()}, sizeof(pid_t));
     write(gui_pipe[1], buffer, BUFFER_SIZE);
 
-    args[0] = PGUI_WRITE_BOTTOM_WINDOW;
-    g_log_set_default_handler(ncurses_log_handler, args);
-
-    g_message("GUI process created with PID %i", getpid());
-
-    signal(SIGINT, exit);
     listenSocket(listenPort);
 
     pause();
@@ -58,6 +57,7 @@ int main(int argc, char *argv[]) {
     exit(0);
   }
 
+  g_debug("process with PID %i", getpid());
   buffer[0] = PGUI_REGISTER_PROCESS;
   memcpy(buffer + 1, (pid_t[]){getpid()}, sizeof(pid_t));
   write(gui_pipe[1], buffer, BUFFER_SIZE);
@@ -130,20 +130,23 @@ void readFile() {
   int counter = 0;
 
   if (RESET_DB) {
-    sprintf(query, "CALL ResetDB();");
-    if (mysql_query(conn, query)) {
+    if (mysql_query(conn, "CALL ResetDB()")) {
       g_warning("Error reseting database: %s", mysql_error(conn));
     }
   }
 
   while (fgets(line, 10, file) != NULL) {
-    sscanf(line, "%c,%d,%d", &id, &x, &y);
+    if (sscanf(line, "%c,%d,%d", &id, &x, &y) != 3 || x < 1 || x > 20 ||
+        y < 1 || y > 20 || id < 'A' || id > 'Z')
+      g_warning("Invalid location. Skipping to the next one");
+    x--;
+    y--;
 
     sprintf(query, "INSERT INTO locations (id, x, y) VALUES ('%c', %d, %d)", id,
             x, y);
 
     if (mysql_query(conn, query)) {
-      g_warning("Error inserting locations %c (%d, %d): %s", id, x, y,
+      g_warning("Error inserting location %c (%d, %d): %s", id, x, y,
                 mysql_error(conn));
       continue;
     }

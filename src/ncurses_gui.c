@@ -1,6 +1,7 @@
 #include "ncurses_gui.h"
 #include "common.h"
 #include <ncurses.h>
+#include <signal.h>
 #include <string.h>
 #include <time.h>
 
@@ -15,7 +16,7 @@ void init_color_rgb(int color, int r, int g, int b) {
 
 void finish() {
   for (int i = 0; i < processCount; i++)
-    kill(processes[i], SIGINT);
+    kill(processes[i], SIGKILL);
 
   wattron(top_win, COLOR_PAIR(PASTEL_RED));
   waddstr(top_win, "\n\nExiting...\n");

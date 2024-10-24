@@ -13,13 +13,18 @@ Response response;
 Request request;
 
 Coordinate pos;
-Coordinate *obj; // It's a pointer to allow NULL value
+Coordinate objective; // It's a pointer to allow NULL value
+Coordinate coordBuffer;
 
 void checkArguments(int argc, char *argv[]);
 void authenticate();
 void waitForService();
 void go();
 void nextStep();
+
+void sendRequest() {
+  sendEvent(producer, "requests", &request, sizeof(request));
+}
 
 int main(int argc, char *argv[]) {
   g_log_set_default_handler(log_handler, NULL);
@@ -36,6 +41,12 @@ int main(int argc, char *argv[]) {
   while (true) {
     waitForService();
     go();
+    request.subject = CLIENT_PICKED_UP;
+    sendRequest();
+    objective = coordBuffer;
+    go();
+    request.subject = SERVICE_COMPLETED;
+    sendRequest();
   }
 }
 
@@ -58,11 +69,12 @@ void waitForService() {
         break;
       }
 
-      obj = malloc(sizeof(Coordinate));
-      memcpy(obj, response.extraArgs, sizeof(Coordinate));
+      memcpy(&objective, response.extraArgs, sizeof(Coordinate));
+      memcpy(&coordBuffer, response.extraArgs + sizeof(Coordinate),
+             sizeof(Coordinate));
 
-      g_message("Service accepted: moving to (%i, %i) to pick up '%c'", obj->x,
-                obj->y, response.clientId);
+      g_message("Service accepted: moving to [%i, %i] to pick up '%c'",
+                objective.x + 1, objective.y + 1, response.clientId);
       return;
 
     default:
@@ -73,12 +85,12 @@ void waitForService() {
 }
 
 void go() {
-  while (pos.x != obj->x || pos.y != obj->y) {
+  while (pos.x != objective.x || pos.y != objective.y) {
     nextStep();
-    g_message("Moving to (%i, %i)", pos.x, pos.y);
+    g_message("Moving to [%i, %i]", pos.x + 1, pos.y + 1);
     request.subject = TAXI_MOVE;
     request.coord = pos;
-    sendEvent(producer, "requests", &request, sizeof(request));
+    sendRequest();
     sleep(1);
   }
 }
@@ -235,7 +247,7 @@ void nextStep() {
     if (newPos.y < 0)
       newPos.y += 20;
 
-    int distance = abs(newPos.x - obj->x) + abs(newPos.y - obj->y);
+    int distance = abs(newPos.x - objective.x) + abs(newPos.y - objective.y);
 
     if (distance < bestDistance) {
       bestDistance = distance;
