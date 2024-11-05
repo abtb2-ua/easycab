@@ -6,3 +6,6 @@ build/
 cores/
 launch.json
 *_o.*
+kafka-config
+server.properties
+*.tar
