@@ -4,7 +4,7 @@
 #include "common.h"
 
 void listenSocket(int listenPort);
-void attend(void *args);
-int checkId(MYSQL *conn, int id);
+void *attend(void *args);
+bool checkId(MYSQL *conn, int id, bool *reconnected);
 
 #endif

@@ -10,7 +10,7 @@
 extern Address kafka, db;
 extern int gui_pipe[2];
 static rd_kafka_t *producer;
-Request request;
+static Request request;
 
 void listenSocket(int listenPort) {
   int serverSocket = openSocket(listenPort);
@@ -40,19 +40,22 @@ void listenSocket(int listenPort) {
       continue;
     }
 
-    pid_t pid = fork();
-    if (pid == 0) {
-      close(serverSocket);
-      attend((int[]){clientSocket, counter});
-      exit(0);
-    }
-    close(clientSocket);
+    // pid_t pid = fork();
+    // if (pid == 0) {
+    //   close(serverSocket);
+    //   attend((int[]){clientSocket, counter});
+    //   exit(0);
+    // }
+    // close(clientSocket);
+    pthread_t thread;
+    pthread_create(&thread, NULL, attend, (int[]){clientSocket, counter});
+    pthread_detach(thread);
 
     counter++;
   }
 }
 
-void attend(void *args) {
+void *attend(void *args) {
   int clientSocket = ((int *)args)[0];
   int counter = ((int *)args)[1];
   char buffer[BUFFER_SIZE];
@@ -105,25 +108,25 @@ void attend(void *args) {
     case STX:
       g_debug("%sReceived STX", prefix);
       int id;
+      bool reconnected;
       memcpy(&id, buffer + 1, sizeof(id));
 
-      int newId = conn != NULL ? checkId(conn, id) : -1;
+      bool idAvailable = conn != NULL ? checkId(conn, id, &reconnected) : false;
 
-      if (newId != -1) {
-        g_message("%sAssigned ID %i", prefix, newId);
+      if (idAvailable) {
+        g_message("%sAssigned ID %i", prefix, id);
 
-        producer = createKafkaAgent(&kafka, RD_KAFKA_PRODUCER);
-        request.subject = NEW_TAXI;
+        char kafkaId[50];
+        sprintf(kafkaId, "authenticate-central-%i-producer", counter);
+        producer = createKafkaAgent(&kafka, RD_KAFKA_PRODUCER, kafkaId);
+        request.subject =
+            reconnected ? REQUEST_TAXI_RECONNECT : REQUEST_NEW_TAXI;
         request.id = id;
         sendEvent(producer, "requests", &request, sizeof(request));
         g_message("Updated map");
-      } else {
-        g_warning("%sCouldn't assign ID %i. No more IDs available.", prefix,
-                  id);
       }
 
-      buffer[0] = newId == id ? ACK : NACK;
-      memcpy(buffer + 1, &newId, sizeof(id));
+      buffer[0] = idAvailable ? ACK : NACK;
 
       write(clientSocket, buffer, BUFFER_SIZE);
       break;
@@ -143,47 +146,32 @@ void attend(void *args) {
   pthread_exit(NULL);
 }
 
-int checkId(MYSQL *conn, int id) {
+bool checkId(MYSQL *conn, int id, bool *reconnected) {
   MYSQL_RES *result = NULL;
-  MYSQL_RES *result2 = NULL;
   MYSQL_ROW row;
-  char query[300];
+  char query[200];
 
-#define SAVE_ID(_id)                                                           \
-  {                                                                            \
-    mysql_free_result(result);                                                 \
-    mysql_free_result(result2);                                                \
-    sprintf(query, "INSERT INTO taxis (id) VALUES (%i)", _id);                 \
-    if (mysql_query(conn, query)) {                                            \
-      g_warning("Error inserting id: %s\n", mysql_error(conn));                \
-      return -1;                                                               \
-    }                                                                          \
-    return _id;                                                                \
-  }
+  sprintf(query, "CALL ConnectTaxi(%i)", id);
 
-  sprintf(query, "SELECT id FROM taxis WHERE id = %i;", id);
-  sprintf(query + strlen(query), "SELECT id FROM taxis;");
+  g_debug("Query: %s", query);
   if (mysql_query(conn, query)) {
-    g_warning("Error checking id: %s\n", mysql_error(conn));
-    return -1;
+    g_warning("Error executing query %s: %s", query, mysql_error(conn));
+    return false;
   }
 
   store_result_wrapper(result);
-  store_result_wrapper(result2);
-
-  if (mysql_num_rows(result) == 0) {
-    SAVE_ID(id);
+  row = mysql_fetch_row(result);
+  if (row[0] == NULL) {
+    g_warning("Unexpected error connecting taxi %i", id);
+    return false;
+  } else if (row[0][0] != '0' && row[0][0] != '1') {
+    g_warning("Error connecting taxi %i: %s", id, row[0]);
+    return false;
+  } else if (row[0][0] == '1') {
+    *reconnected = false;
+  } else {
+    *reconnected = true;
   }
 
-  int i = 0;
-  while ((row = mysql_fetch_row(result2))) {
-    if (i != atoi(row[0])) {
-      SAVE_ID(i);
-    }
-    i++;
-  }
-
-  if (i >= 100)
-    return -1;
-  SAVE_ID(i);
+  return true;
 }

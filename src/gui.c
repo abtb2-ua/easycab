@@ -6,13 +6,14 @@
 #include <time.h>
 
 // Core parameters (not prepared for customization)
-#define MARGIN 50                             // 50
-#define GUTTER 10                             // 10
-#define PADDING 7                             // 7
-#define FRAME_BORDER_SIZE 5                   // 5
-#define MAP_SIZE 900                          // 900
-#define GRID_SIZE 20                          // 20
-#define CELL_SIZE (int)(MAP_SIZE / GRID_SIZE) // (int)(MAP_SIZE / GRID_SIZE)
+#define MARGIN 50           // 50
+#define GUTTER 10           // 10
+#define PADDING 7           // 7
+#define FRAME_BORDER_SIZE 5 // 5
+#define GUI_MAP_SIZE 900    // 900
+#define GRID_SIZE 20        // 20
+#define CELL_SIZE                                                              \
+  (int)(GUI_MAP_SIZE / GRID_SIZE) // (int)(GUI_MAP_SIZE / GRID_SIZE)
 #define FRAME_ROUNDNESS .025
 #define CELL_ROUNDNESS .1
 #define CELL_BORDER_THICKNESS 3
@@ -20,6 +21,7 @@
 #define FONT_SIZE_1 30
 #define FONT_SIZE_2 26
 #define FONT_SIZE_3 20
+#define FONT_SIZE_4 19
 
 // Styling options
 #define FULL_BACKGROUND false     // false
@@ -45,34 +47,36 @@ struct {
 } PALLETES;
 
 ColorPalette global_colors[GRID_SIZE][GRID_SIZE];
-char global_content[GRID_SIZE][GRID_SIZE][4];
+char global_content[GRID_SIZE][GRID_SIZE][5];
 static pthread_mutex_t mut_mapContent = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t mut_finishFlag = PTHREAD_MUTEX_INITIALIZER;
 Address kafka = {.ip = "localhost", .port = 9092};
 bool finish = false;
 
-ColorPalette GetPalette(AGENT_TYPE agent);
-void init();
+ColorPalette GetPalette(Agent *agent);
+void GetContent(Agent *agent, char content[5]);
+void Init();
 void DrawLabels();
-void *update();
+void *Update();
 
 int main() {
-  InitWindow(MARGIN * 2 + MAP_SIZE, MARGIN * 2 + MAP_SIZE, "Mapa");
+  InitWindow(MARGIN * 2 + GUI_MAP_SIZE, MARGIN * 2 + GUI_MAP_SIZE, "Mapa");
   SetTargetFPS(MAX_FPS);
-  init();
+  Init();
 
   pthread_t thread;
-  pthread_create(&thread, NULL, update, NULL);
+  pthread_create(&thread, NULL, Update, NULL);
 
   Font font = LoadFont("fonts/jupiter_crash.png");
 
   Rectangle cells[GRID_SIZE][GRID_SIZE] = {0};
-  Rectangle background = {0, 0, MARGIN * 2 + MAP_SIZE, GetScreenWidth()};
-  Rectangle frame = (Rectangle){MARGIN - PADDING, MARGIN - PADDING,
-                                MAP_SIZE + PADDING * 2, MAP_SIZE + PADDING * 2};
+  Rectangle background = {0, 0, MARGIN * 2 + GUI_MAP_SIZE, GetScreenWidth()};
+  Rectangle frame =
+      (Rectangle){MARGIN - PADDING, MARGIN - PADDING,
+                  GUI_MAP_SIZE + PADDING * 2, GUI_MAP_SIZE + PADDING * 2};
 
   struct ColorPalette colors[GRID_SIZE][GRID_SIZE];
-  char content[GRID_SIZE][GRID_SIZE][4];
+  char content[GRID_SIZE][GRID_SIZE][5];
 
   if (!FULL_BACKGROUND) {
     background = frame;
@@ -117,7 +121,8 @@ int main() {
 
         int fontSize = strlen(content[i][j]) == 1   ? FONT_SIZE_1
                        : strlen(content[i][j]) == 2 ? FONT_SIZE_2
-                                                    : FONT_SIZE_3;
+                       : strlen(content[i][j]) == 3 ? FONT_SIZE_3
+                                                    : FONT_SIZE_4;
         Vector2 v = MeasureTextEx(font, content[i][j], fontSize, 2);
         DrawTextEx(
             font, content[i][j],
@@ -143,7 +148,7 @@ int main() {
 }
 // clang-format on
 
-void init() {
+void Init() {
   PALLETES.green =
       (struct ColorPalette){.background = Fade(GREEN, .8), .border = DARKGREEN};
   PALLETES.blue =
@@ -186,11 +191,11 @@ void DrawLabels() {
       DrawText(text,
                MARGIN + i * CELL_SIZE - MeasureText(text, 20) / 2 -
                    CELL_SIZE / 2,
-               MARGIN + PADDING + 15 + MAP_SIZE, 20, DARKGRAY);
+               MARGIN + PADDING + 15 + GUI_MAP_SIZE, 20, DARKGRAY);
     }
 
     if (VLABELS >= 2) {
-      DrawText(text, MARGIN + PADDING + 15 + MAP_SIZE,
+      DrawText(text, MARGIN + PADDING + 15 + GUI_MAP_SIZE,
                MARGIN + i * CELL_SIZE - MeasureText(text, 20) / 2 -
                    CELL_SIZE / 2,
                20, DARKGRAY);
@@ -198,22 +203,32 @@ void DrawLabels() {
   }
 }
 
-void *update() {
+void *Update() {
   g_log_set_default_handler(log_handler, NULL);
-  rd_kafka_t *consumer = createKafkaAgent(&kafka, RD_KAFKA_CONSUMER);
+  rd_kafka_t *consumer =
+      createKafkaAgent(&kafka, RD_KAFKA_CONSUMER, generate_unique_id());
   rd_kafka_message_t *msg = NULL;
   Response response;
   ColorPalette colors[GRID_SIZE][GRID_SIZE];
-  char content[GRID_SIZE][GRID_SIZE][4];
+  char content[GRID_SIZE][GRID_SIZE][5];
   bool local_finish = false;
 
-  subscribeToTopics(&consumer, (const char *[]){"responses"}, 1);
+  subscribeToTopics(
+      &consumer,
+      (const char *[]){"taxi_responses", "customer_responses", "map_responses"},
+      3);
+  // sleep(1);
 
   do {
     if (msg != NULL)
       rd_kafka_message_destroy(msg);
-    if (!(msg = poll_wrapper(consumer, 1000)))
+    if (!(msg = rd_kafka_consumer_poll(consumer, 1000)))
       continue;
+
+    if (msg->err) {
+      g_warning("Error: %s", rd_kafka_message_errstr(msg));
+      continue;
+    }
 
     g_debug("Reading message");
 
@@ -221,9 +236,19 @@ void *update() {
 
     for (int i = 0; i < GRID_SIZE; i++) {
       for (int j = 0; j < GRID_SIZE; j++) {
-        colors[i][j] = GetPalette(response.map[i][j].agent);
-        strcpy(content[i][j], response.map[i][j].str);
+        colors[i][j] = PALLETES.blank;
+        content[i][j][0] = '\0';
       }
+    }
+
+    for (int i = 0; response.map[i] != 0; i++) {
+      Agent agent;
+      deserializeAgent(&agent, response.map[i]);
+      if ((agent.type == CLIENT && agent.status == CLIENT_IN_TAXI) ||
+          (agent.type == TAXI && agent.status == TAXI_DISCONNECTED))
+        continue;
+      colors[agent.coord.x][agent.coord.y] = GetPalette(&agent);
+      GetContent(&agent, content[agent.coord.x][agent.coord.y]);
     }
 
     pthread_mutex_lock(&mut_mapContent);
@@ -239,12 +264,12 @@ void *update() {
   return NULL;
 }
 
-ColorPalette GetPalette(AGENT_TYPE agent) {
-  switch (agent) {
+ColorPalette GetPalette(Agent *agent) {
+  switch (agent->type) {
   case TAXI:
+    if (agent->status == TAXI_STOPPED || agent->status == TAXI_DISCONNECTED)
+      return PALLETES.red;
     return PALLETES.green;
-  case TAXI_STOPPED:
-    return PALLETES.red;
   case CLIENT:
     return PALLETES.yellow;
   case LOCATION:
@@ -252,4 +277,40 @@ ColorPalette GetPalette(AGENT_TYPE agent) {
   default:
     return PALLETES.blank;
   }
+}
+
+void GetContent(Agent *agent, char content[5]) {
+  if (agent->type == TAXI) {
+    // printf("Agent type: %i\n", agent->type);
+    // printf("Agent status: %i\n", agent->status);
+    // printf("Carrying client: %i\n", agent->carryingCustomer);
+    // printf("Agent can move: %i\n", agent->canMove);
+    // printf("Id: %i\n", agent->id);
+    // printf("\n");
+  }
+
+  int currentIndex = 0;
+
+  if (agent->type == TAXI && !agent->canMove) {
+    content[currentIndex] = '!';
+    currentIndex++;
+  }
+
+  if (agent->type == TAXI) {
+    sprintf(content + currentIndex, "%i", agent->id);
+    if (agent->id >= 10)
+      currentIndex += 2;
+    else
+      currentIndex++;
+  } else {
+    content[currentIndex] = agent->id;
+    currentIndex++;
+  }
+
+  if (agent->type == TAXI && agent->carryingCustomer) {
+    content[currentIndex] = agent->obj;
+    currentIndex++;
+  }
+
+  content[currentIndex < 5 ? currentIndex : 4] = '\0';
 }

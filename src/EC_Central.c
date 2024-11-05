@@ -5,17 +5,19 @@
 #include "socket_module.h"
 #include <ncurses.h>
 
-#define RESET_DB true
+bool RESET_DB = false;
 #define FILE_NAME "res/locations.csv"
 
 Address kafka, db;
 int gui_pipe[2];
 
+void getEnvVars();
 void checkArguments(int argc, char *argv[], int *listenPort);
 void readFile();
 void read_error(const char *format, ...);
 
 int main(int argc, char *argv[]) {
+  // printf("%li", sizeof(Agent));
   // startKafkaServer();
   // return 0;
 
@@ -26,6 +28,7 @@ int main(int argc, char *argv[]) {
 
   g_log_set_default_handler(log_handler, NULL);
   checkArguments(argc, argv, &listenPort);
+  getEnvVars();
 
   pid_t gui_pid = fork();
   if (gui_pid != 0) {
@@ -62,7 +65,9 @@ int main(int argc, char *argv[]) {
   memcpy(buffer + 1, (pid_t[]){getpid()}, sizeof(pid_t));
   write(gui_pipe[1], buffer, BUFFER_SIZE);
 
-  readFile();
+  if (RESET_DB) {
+    readFile();
+  }
 
   startKafkaServer();
 }
@@ -129,10 +134,8 @@ void readFile() {
   char query[200];
   int counter = 0;
 
-  if (RESET_DB) {
-    if (mysql_query(conn, "CALL ResetDB()")) {
-      g_warning("Error reseting database: %s", mysql_error(conn));
-    }
+  if (mysql_query(conn, "CALL ResetDB()")) {
+    g_warning("Error reseting database: %s", mysql_error(conn));
   }
 
   while (fgets(line, 10, file) != NULL) {
@@ -159,4 +162,11 @@ void readFile() {
   mysql_close(conn);
   mysql_library_end();
   fclose(file);
+}
+
+void getEnvVars() {
+  char *reset = getenv("RESET_DB");
+
+  if (reset != NULL && strcmp(reset, "true") == 0)
+    RESET_DB = true;
 }

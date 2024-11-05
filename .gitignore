@@ -4,3 +4,5 @@ playground/
 *.pdf
 build/
 cores/
+launch.json
+*_o.*
