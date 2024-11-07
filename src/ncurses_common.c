@@ -82,8 +82,8 @@ void printFinishPopUp(char *extra) {
   wattron(pop_up, COLOR_PAIR(PASTEL_RED));
   // Third msg exists to balance the first space in case that extra is not printed
   // This way the message will always be centered
-  mvwprintw(pop_up, 2, (pop_up_width - strlen(msg1)) / 2, "%s %s%s", extra ? extra : "", msg1,
-            extra ? "" : " ");
+  mvwprintw(pop_up, 2, (pop_up_width - strlen(msg1) + (extra ? strlen(extra) + 1 : 0)) / 2,
+            "%s %s%s", extra ? extra : "", msg1, extra ? "" : " ");
   wattroff(pop_up, COLOR_PAIR(PASTEL_RED));
   wattron(pop_up, A_DIM);
   mvwaddstr(pop_up, 3, (pop_up_width - strlen(msg2)) / 2, msg2);
