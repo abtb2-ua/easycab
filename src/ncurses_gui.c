@@ -7,6 +7,7 @@
 #include <ncurses.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -40,96 +41,9 @@ void finish() {
   for (int i = 0; i < processCount; i++)
     kill(processes[i], SIGKILL);
 
-  char *msg1 = "Exiting...";
-  char *msg2 = "(Press any key to continue)";
-  int maxx = getmaxx(stdscr);
-  int maxy = getmaxy(stdscr);
-  int pop_up_width = strlen(msg2) + 8;
+  printFinishPopUp(NULL);
 
-  WINDOW *pop_up =
-      newwin(6, pop_up_width, (maxy - 5) / 2, (maxx - strlen(msg2) - 4) / 2);
-
-  box(pop_up, 0, 0);
-  wattron(pop_up, COLOR_PAIR(PASTEL_RED));
-  mvwaddstr(pop_up, 2, (pop_up_width - strlen(msg1)) / 2, msg1);
-  wattroff(pop_up, COLOR_PAIR(PASTEL_RED));
-  wattron(pop_up, A_DIM);
-  mvwaddstr(pop_up, 3, (pop_up_width - strlen(msg2)) / 2, msg2);
-  wrefresh(pop_up);
-
-  getchar();
-  endwin();
-  printf("Exiting...\n");
   printf("Processes stopped: %i\n", processCount);
-}
-
-void ncurses_log_handler(const gchar *log_domain, GLogLevelFlags log_level,
-                         const gchar *message, gpointer user_data) {
-  if ((log_level & G_LOG_LEVEL_MASK) == G_LOG_LEVEL_DEBUG) {
-    char *debug_env = getenv("G_MESSAGES_DEBUG");
-
-    if (debug_env == NULL)
-      return;
-  }
-
-  int screen = *(int *)user_data;
-  int p = *(int *)(user_data + sizeof(int));
-
-  char buffer[BUFFER_SIZE];
-
-  struct timeval now;
-  gettimeofday(&now, NULL);
-  int hours = (now.tv_sec / 3600) % 24 + 2; // UTC + 2
-  int minutes = (now.tv_sec / 60) % 60;
-  int seconds = now.tv_sec % 60;
-  int milliseconds = now.tv_usec / 1000.0;
-
-  buffer[0] = screen;
-  buffer[1] = PASTEL_BLUE;
-  sprintf(buffer + 2, "[%i:%02i:%02i.%03i] ", hours, minutes, seconds,
-          milliseconds);
-  write(p, buffer, BUFFER_SIZE);
-
-  switch (log_level & G_LOG_LEVEL_MASK) {
-  case G_LOG_LEVEL_CRITICAL:
-    buffer[1] = PASTEL_PURPLE;
-    strcpy(buffer + 2, "** CRITICAL **");
-    break;
-  case G_LOG_LEVEL_WARNING:
-    buffer[1] = PASTEL_ORANGE;
-    strcpy(buffer + 2, "** WARNING **");
-    break;
-  case G_LOG_LEVEL_MESSAGE:
-    buffer[1] = PASTEL_GREEN;
-    strcpy(buffer + 2, "Message");
-    break;
-  case G_LOG_LEVEL_DEBUG:
-    buffer[1] = PASTEL_MAGENTA;
-    strcpy(buffer + 2, "Debug");
-    break;
-  case G_LOG_LEVEL_INFO:
-    buffer[1] = PASTEL_BLUE;
-    strcpy(buffer + 2, "Info");
-    break;
-  case G_LOG_LEVEL_ERROR:
-    buffer[1] = PASTEL_RED;
-    strcpy(buffer + 2, "** ERROR **");
-    break;
-  default:
-    break;
-  }
-
-  write(p, buffer, BUFFER_SIZE);
-
-  sprintf(buffer + 2, ": %s\n", message);
-  buffer[1] = 0;
-  write(p, buffer, BUFFER_SIZE);
-
-  if ((log_level & G_LOG_LEVEL_MASK) == G_LOG_LEVEL_ERROR) {
-    buffer[0] = PGUI_END_EXECUTION;
-    write(p, buffer, BUFFER_SIZE);
-    return;
-  }
 }
 
 void ncursesInit() {
@@ -166,23 +80,20 @@ void ncursesInit() {
   wrefresh(menu_box);
 
   keypad(menu_win, TRUE);
-  wtimeout(menu_win, 10);
+  wtimeout(menu_win, 0);
 
-  wborder(top_box, ACS_VLINE, ' ', ' ', ACS_HLINE, ACS_BBSS, ' ', ACS_LTEE,
-          ACS_HLINE);
+  wborder(top_box, ACS_VLINE, ' ', ' ', ACS_HLINE, ACS_BBSS, ' ', ACS_LTEE, ACS_HLINE);
   wrefresh(top_box);
 
-  producer = createKafkaAgent(&kafka, RD_KAFKA_PRODUCER,
-                              "central-ncurses-gui-producer");
+  producer = createKafkaUser(&kafka, RD_KAFKA_PRODUCER, "central-ncurses-gui-producer");
 
-  statusTranslations[TAXI_EMPTY] = "Empty";
-  statusTranslations[TAXI_CARRYING_CLIENT] = "Carrying client";
-  statusTranslations[TAXI_STOPPED] = "Stopped";
-  statusTranslations[TAXI_DISCONNECTED] = "Disconnected";
-  statusTranslations[CLIENT_WAITING_TAXI] = "Waiting taxi";
-  statusTranslations[CLIENT_IN_TAXI] = "In taxi";
-  statusTranslations[CLIENT_IN_QUEUE] = "In queue";
-  statusTranslations[CLIENT_OTHER] = "Doing errands";
+  statusTranslations[STATUS_TAXI_CANT_MOVE] = "Can't move";
+  statusTranslations[STATUS_TAXI_STOPPED] = "Stopped";
+  statusTranslations[STATUS_TAXI_DISCONNECTED] = "Disconnected";
+  statusTranslations[STATUS_CUSTOMER_WAITING_TAXI] = "Waiting taxi";
+  statusTranslations[STATUS_CUSTOMER_IN_TAXI] = "In taxi";
+  statusTranslations[STATUS_CUSTOMER_IN_QUEUE] = "In queue";
+  statusTranslations[STATUS_CUSTOMER_OTHER] = "Doing errands";
 }
 
 void ncursesGui(int p) {
@@ -202,7 +113,7 @@ void ncursesGui(int p) {
 
     handleInput(c);
 
-    if (printPetition(p) == -1)
+    if (!printPetition(p))
       break;
 
     // if (selectedView != lastSelectedView) {
@@ -229,12 +140,9 @@ void *readMap() {
   Response response;
   response.map[0] = 0;
   rd_kafka_message_t *msg = NULL;
-  rd_kafka_t *consumer = createKafkaAgent(&kafka, RD_KAFKA_CONSUMER,
-                                          "central-ncurses-gui-consumer");
-  subscribeToTopics(
-      &consumer,
-      (const char *[]){"taxi_responses", "customer_responses", "map_responses"},
-      3);
+  rd_kafka_t *consumer = createKafkaUser(&kafka, RD_KAFKA_CONSUMER, "central-ncurses-gui-consumer");
+  subscribeToTopics(&consumer,
+                    (const char *[]){"taxi_responses", "customer_responses", "map_responses"}, 3);
 
   while (true) {
     if (msg != NULL)
@@ -278,8 +186,7 @@ void handleInput(int c) {
     werase(table_win);
 
     if (selectedView == 0) {
-      wborder(top_box, ACS_VLINE, ' ', ' ', ACS_HLINE, ACS_BBSS, ' ', ACS_LTEE,
-              ACS_HLINE);
+      wborder(top_box, ACS_VLINE, ' ', ' ', ACS_HLINE, ACS_BBSS, ' ', ACS_LTEE, ACS_HLINE);
     } else {
 
       wborder(top_box, ACS_VLINE, ' ', ' ', ' ', ACS_BBSS, ' ', ACS_VLINE, ' ');
@@ -296,11 +203,10 @@ void handleInput(int c) {
     } else if (c == KEY_DOWN || c == 's') {
       selectedOption = (selectedOption + 1) % (selectedAction == 0 ? 3 : 2);
     } else if (c == KEY_UP || c == 'w') {
-      selectedOption = (selectedOption + (selectedAction == 0 ? 3 : 2) - 1) %
-                       (selectedAction == 0 ? 3 : 2);
-    } else if ((c == ' ' || c == '\n') &&
-               ((selectedAction == 0 && selectedOption == 2) ||
-                (selectedAction != 0 && selectedOption == 1))) {
+      selectedOption =
+          (selectedOption + (selectedAction == 0 ? 3 : 2) - 1) % (selectedAction == 0 ? 3 : 2);
+    } else if ((c == ' ' || c == '\n') && ((selectedAction == 0 && selectedOption == 2) ||
+                                           (selectedAction != 0 && selectedOption == 1))) {
       showErrorMsg = 0;
       for (int i = 0; i < 2; i++)
         if (selectedTaxi[i] == -1)
@@ -412,7 +318,7 @@ void printLogs() {
 
 void printTableView() {
   int localMap[MAP_SIZE];
-  Table locs, clients, taxis;
+  Table locs, customers, taxis;
   char status[100];
   strcpy(status + STATUS_MARGIN, "Status");
   for (int i = 0; i < STATUS_MARGIN; i++) {
@@ -421,22 +327,19 @@ void printTableView() {
   }
   status[STATUS_MARGIN * 2 + 6] = '\0';
 
-  initTable(&locs, 0, 1, (char *[]){"ID", "Coordinate"}, 2, "Locations",
+  Coordinate startCoord = {.x = 0, .y = 1};
+  initTable(&locs, startCoord, "Locations", (char *[]){"ID", "Coordinate"}, 2, PASTEL_RED);
+  initTable(&customers, startCoord, "Customers",
+            (char *[]){"ID", "Coordinate", "Destination", status}, 4, PASTEL_RED);
+  initTable(&taxis, startCoord, "Taxis", (char *[]){"ID", "Coordinate", "Service", status}, 4,
             PASTEL_RED);
-  initTable(&clients, 0, 1,
-            (char *[]){"ID", "Coordinate", "Destination", status}, 4, "Clients",
-            PASTEL_RED);
-  initTable(&taxis, 0, 1, (char *[]){"ID", "Coordinate", "Service", status}, 4,
-            "Taxis", PASTEL_RED);
 
-  int totalLength =
-      locs.length + clients.length + taxis.length + MARGIN_BETWEEN_TABLES * 2;
+  int totalLength = locs.length + customers.length + taxis.length + MARGIN_BETWEEN_TABLES * 2;
   int maxx = getmaxx(stdscr);
-  int start = (maxx - WIDTH - totalLength) / 2;
-  locs.start_x = start;
-  clients.start_x = start + locs.length + MARGIN_BETWEEN_TABLES;
-  taxis.start_x =
-      start + locs.length + clients.length + MARGIN_BETWEEN_TABLES * 2;
+  int start_x = (maxx - WIDTH - totalLength) / 2;
+  locs.start.x = start_x;
+  customers.start.x = start_x + locs.length + MARGIN_BETWEEN_TABLES;
+  taxis.start.x = start_x + locs.length + customers.length + MARGIN_BETWEEN_TABLES * 2;
 
   pthread_mutex_lock(&mut);
   memcpy(localMap, map, sizeof(localMap));
@@ -446,40 +349,39 @@ void printTableView() {
   char coord[30];
   char obj[2];
   for (int i = 0; map[i] != 0; i++) {
-    Agent agent;
-    deserializeAgent(&agent, map[i]);
-    sprintf(coord, "[%02i, %02i]", agent.coord.x + 1, agent.coord.y + 1);
-    sprintf(id, "%c", agent.id);
+    Entity entity;
+    deserializeEntity(&entity, map[i]);
+    sprintf(coord, "[%02i, %02i]", entity.coord.x + 1, entity.coord.y + 1);
+    sprintf(id, "%c", entity.id);
 
-    if (agent.type == LOCATION) {
+    if (entity.type == ENTITY_LOCATION) {
       addRow(&locs, (const char *[]){id, coord}, true);
-    } else if (agent.type == CLIENT) {
-      obj[0] = agent.obj == -1 ? '-' : agent.obj;
+    } else if (entity.type == ENTITY_CUSTOMER) {
+      obj[0] = entity.obj == -1 ? '-' : entity.obj;
       obj[1] = '\0';
-      addRow(&clients,
-             (const char *[]){id, coord, obj, statusTranslations[agent.status]},
-             true);
+      addRow(&customers, (const char *[]){id, coord, obj, statusTranslations[entity.status]}, true);
     } else {
-      sprintf(id, "%02i", agent.id);
-      obj[0] = agent.obj == -1 ? '-' : agent.obj;
+      sprintf(id, "%02i", entity.id);
+      obj[0] = entity.obj == -1 ? '-' : entity.obj;
       obj[1] = '\0';
-      if (agent.status == TAXI_STOPPED && agent.canMove == false) {
-        addRow(&taxis, (const char *[]){id, coord, obj, "Can't move"}, true);
+      if (entity.status == STATUS_TAXI_MOVING) {
+        addRow(&taxis,
+               (const char *[]){id, coord, obj,
+                                entity.carryingCustomer ? "Carrying customer" : "Moving"},
+               true);
       } else {
-        addRow(
-            &taxis,
-            (const char *[]){id, coord, obj, statusTranslations[agent.status]},
-            agent.status != TAXI_DISCONNECTED);
+        addRow(&taxis, (const char *[]){id, coord, obj, statusTranslations[entity.status]},
+               entity.status != STATUS_TAXI_DISCONNECTED);
       }
     }
   }
 
   werase(table_win);
   printTable(&locs, table_win);
-  printTable(&clients, table_win);
+  printTable(&customers, table_win);
   printTable(&taxis, table_win);
   destroyTable(&locs);
-  destroyTable(&clients);
+  destroyTable(&customers);
   destroyTable(&taxis);
   wrefresh(table_win);
 }
@@ -499,37 +401,31 @@ void printMenu() {
   mvwprintw(menu_win, 3, 1, "[%c] Table", selectedView == 1 ? 'X' : ' ');
   mvwprintw(menu_win, 7, 1, " %c%c Go to", selectedAction == 0 ? '>' : ' ',
             (selectedAction == 0 && showOptions) ? '>' : ' ');
-  mvwprintw(menu_win, 8, 1, " %c%c Return to base",
-            selectedAction == 1 ? '>' : ' ',
+  mvwprintw(menu_win, 8, 1, " %c%c Return to base", selectedAction == 1 ? '>' : ' ',
             (selectedAction == 1 && showOptions) ? '>' : ' ');
   mvwprintw(menu_win, 9, 1, " %c%c Stop", selectedAction == 2 ? '>' : ' ',
             (selectedAction == 2 && showOptions) ? '>' : ' ');
   mvwprintw(menu_win, 10, 1, " %c%c Continue", selectedAction == 3 ? '>' : ' ',
             (selectedAction == 3 && showOptions) ? '>' : ' ');
   if (showOptions) {
-    mvwprintw(menu_win, 13, 1, " %c  Taxi: %c%c",
-              selectedOption == 0 ? '>' : ' ',
+    mvwprintw(menu_win, 13, 1, " %c  Taxi: %c%c", selectedOption == 0 ? '>' : ' ',
               selectedTaxi[0] == -1 ? '_' : selectedTaxi[0] + '0',
               selectedTaxi[1] == -1 ? '_' : selectedTaxi[1] + '0');
     if (selectedAction == 0) {
-      mvwprintw(menu_win, 14, 1, " %c  Coordinate: [%c%c, %c%c]",
-                selectedOption == 1 ? '>' : ' ',
+      mvwprintw(menu_win, 14, 1, " %c  Coordinate: [%c%c, %c%c]", selectedOption == 1 ? '>' : ' ',
                 selectedCoord[0] == -1 ? '_' : selectedCoord[0] + '0',
                 selectedCoord[1] == -1 ? '_' : selectedCoord[1] + '0',
                 selectedCoord[2] == -1 ? '_' : selectedCoord[2] + '0',
                 selectedCoord[3] == -1 ? '_' : selectedCoord[3] + '0');
-      mvwprintw(menu_win, 15, 1, " %c  Execute ",
-                selectedOption == 2 ? '>' : ' ');
+      mvwprintw(menu_win, 15, 1, " %c  Execute ", selectedOption == 2 ? '>' : ' ');
       if (showErrorMsg) {
         wattron(menu_win, COLOR_PAIR(PASTEL_RED));
         mvwprintw(menu_win, 18, 1,
-                  showErrorMsg == 1 ? "Fill the required fields"
-                                    : "Invalid coordinate");
+                  showErrorMsg == 1 ? "Fill the required fields" : "Invalid coordinate");
         wattroff(menu_win, COLOR_PAIR(PASTEL_RED));
       }
     } else {
-      mvwprintw(menu_win, 14, 1, " %c  Execute ",
-                selectedOption == 1 ? '>' : ' ');
+      mvwprintw(menu_win, 14, 1, " %c  Execute ", selectedOption == 1 ? '>' : ' ');
       if (showErrorMsg) {
         wattron(menu_win, COLOR_PAIR(PASTEL_RED));
         mvwprintw(menu_win, 17, 1, "Fill the required fields");
@@ -544,14 +440,13 @@ void printMenu() {
 
   mvwaddstr(menu_win, getmaxy(menu_win) - 1, 1, "(Press 'q' to exit)");
   if (showOptions)
-    mvwaddstr(menu_win, selectedAction == 0 ? 16 : 15, 1,
-              "(Press 'b' to cancel)");
+    mvwaddstr(menu_win, selectedAction == 0 ? 16 : 15, 1, "(Press 'b' to cancel)");
   wattroff(menu_win, A_DIM);
 
   wrefresh(menu_win);
 }
 
-int printPetition(int p) {
+bool printPetition(int p) {
   Queue **q = NULL;
   fd_set readfds;
   char buffer[BUFFER_SIZE];
@@ -570,18 +465,17 @@ int printPetition(int p) {
       break;
 
     case PGUI_END_EXECUTION:
-      return -1;
+      return false;
 
     case PGUI_REGISTER_PROCESS:
       memcpy(&processes[processCount], buffer + 1, sizeof(pid_t));
       processCount++;
-      return 0;
+      return true;
 
     default:
-      if (buffer[0] == PGUI_WRITE_BOTTOM_WINDOW ||
-          buffer[0] == PGUI_WRITE_TOP_WINDOW)
+      if (buffer[0] == PGUI_WRITE_BOTTOM_WINDOW || buffer[0] == PGUI_WRITE_TOP_WINDOW)
         break;
-      return 0;
+      return true;
     }
 
     // if (color != 0) {
@@ -597,5 +491,5 @@ int printPetition(int p) {
     // waddstr(bottom_win, buffer + 2);
     // wrefresh(*win);
   }
-  return 0;
+  return true;
 }

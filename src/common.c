@@ -13,7 +13,7 @@ const char *inconveniences[4][INCONVENIENCES_COUNT] ={
   "Waiting for a granny to cross the street...",
   "The traffic light is red...", "There's a small traffic jam...",
   "Waiting for a chance to overtake a stopped car...",
-  "A little kid has a very scary costume! Waiting for the taxi sensitive digital engine to regain composture...",
+  "A little kid has a very scary costume! Waiting for the sensitive digital engine to regain composture...",
   "Kids playing football accidentally kicked the ball into the road...",
   "The road is in poor condition, slowing down...",
   "Dirt is blocking the sensor...",
@@ -58,16 +58,14 @@ const char *inconveniences[4][INCONVENIENCES_COUNT] ={
 }};
 // clang-format on
 
-char *generate_unique_id() {
-  static char id[37];
+void generate_unique_id(char id[UUID_LENGTH]) {
   uuid_t binuuid;
   uuid_generate_random(binuuid);
   uuid_unparse(binuuid, id);
-  return id;
 }
 
-void log_handler(const gchar *log_domain, GLogLevelFlags log_level,
-                 const gchar *message, gpointer user_data) {
+void log_handler(const gchar *log_domain, GLogLevelFlags log_level, const gchar *message,
+                 gpointer user_data) {
   const char *GREEN = "\x1b[38;5;156m";
   const char *RESET = "\x1b[0m";
   const char *BOLD = "\x1b[1m";
@@ -91,8 +89,7 @@ void log_handler(const gchar *log_domain, GLogLevelFlags log_level,
   int seconds = (int)now.tv_sec % 60;
   int milliseconds = (int)now.tv_usec / 1000;
 
-  printf("%s[%02i:%02i:%02i.%03i]%s ", BLUE, hours, minutes, seconds,
-         milliseconds, RESET);
+  printf("%s[%02i:%02i:%02i.%03i]%s ", BLUE, hours, minutes, seconds, milliseconds, RESET);
 
   switch (log_level & G_LOG_LEVEL_MASK) {
   case G_LOG_LEVEL_CRITICAL:
@@ -194,20 +191,24 @@ int connectToServer(Address *serverAddress) {
   return s;
 }
 
-#define SET_CONFIG(conf, key, value, errstr)                                   \
-  if (rd_kafka_conf_set(conf, key, value, errstr, sizeof(errstr)) !=           \
-      RD_KAFKA_CONF_OK)                                                        \
+#define SET_CONFIG(conf, key, value, errstr)                                                       \
+  if (rd_kafka_conf_set(conf, key, value, errstr, sizeof(errstr)) != RD_KAFKA_CONF_OK)             \
     g_error("Error configuring Kafka: %s", errstr);
 
-rd_kafka_t *createKafkaAgent(Address *serverAddress, rd_kafka_type_t type,
-                             char *id) {
+rd_kafka_t *createKafkaUser(Address *serverAddress, rd_kafka_type_t type, char *id) {
   rd_kafka_conf_t *conf;
-  rd_kafka_t *agent;
+  rd_kafka_t *user;
   char errstr[512];
-  // char client_id[50];
+  // char customer_id[50];
   char serverAddressStr[50];
+  char backUpId[UUID_LENGTH];
+  if (id == NULL) {
+    g_debug("Using backup id");
+    generate_unique_id(backUpId);
+    id = backUpId;
+  }
 
-  // sprintf(client_id, "kafka-%s-%s",
+  // sprintf(customer_id, "kafka-%s-%s",
   //         type == RD_KAFKA_PRODUCER ? "producer" : "consumer",
   //         generate_unique_id());
   sprintf(serverAddressStr, "%s:%d", serverAddress->ip, serverAddress->port);
@@ -225,37 +226,33 @@ rd_kafka_t *createKafkaAgent(Address *serverAddress, rd_kafka_type_t type,
     SET_CONFIG(conf, "max.poll.interval.ms", "6000", errstr);
   }
 
-  agent = rd_kafka_new(type, conf, errstr, sizeof(errstr));
-  if (!agent) {
-    g_error("Failed to create new Kafka agent: %s", errstr);
+  user = rd_kafka_new(type, conf, errstr, sizeof(errstr));
+  if (!user) {
+    g_error("Failed to create new Kafka user: %s", errstr);
   }
 
   conf = NULL;
 
   if (type == RD_KAFKA_CONSUMER) {
-    rd_kafka_poll_set_consumer(agent);
+    rd_kafka_poll_set_consumer(user);
   }
 
-  return agent;
+  return user;
 }
 
-void subscribeToTopics(rd_kafka_t **consumer, const char **topics,
-                       int topicsCount) {
-  rd_kafka_topic_partition_list_t *subscription =
-      rd_kafka_topic_partition_list_new(topicsCount);
+void subscribeToTopics(rd_kafka_t **consumer, const char **topics, int topicsCount) {
+  rd_kafka_topic_partition_list_t *subscription = rd_kafka_topic_partition_list_new(topicsCount);
   rd_kafka_resp_err_t err;
 
   for (int i = 0; i < topicsCount; i++) {
-    rd_kafka_topic_partition_list_add(subscription, topics[i],
-                                      RD_KAFKA_PARTITION_UA);
+    rd_kafka_topic_partition_list_add(subscription, topics[i], RD_KAFKA_PARTITION_UA);
   }
 
   err = rd_kafka_subscribe(*consumer, subscription);
   if (err) {
     rd_kafka_topic_partition_list_destroy(subscription);
     rd_kafka_destroy(*consumer);
-    g_error("Failed to subscribe to %d topics: %s", subscription->cnt,
-            rd_kafka_err2str(err));
+    g_error("Failed to subscribe to %d topics: %s", subscription->cnt, rd_kafka_err2str(err));
   }
 
   rd_kafka_topic_partition_list_destroy(subscription);
@@ -269,8 +266,7 @@ void subscribeToTopics(rd_kafka_t **consumer, const char **topics,
   }
 }
 
-void sendEvent(rd_kafka_t *producer, const char *topic, void *value,
-               size_t valueSize) {
+void sendEvent(rd_kafka_t *producer, const char *topic, void *value, size_t valueSize) {
   rd_kafka_resp_err_t err;
   char key[20];
   sprintf(key, "%li", time(NULL));
@@ -279,11 +275,9 @@ void sendEvent(rd_kafka_t *producer, const char *topic, void *value,
     g_error("Producer is NULL");
 
   err = rd_kafka_producev(
-      producer, RD_KAFKA_V_TOPIC(topic),
-      RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_COPY),
+      producer, RD_KAFKA_V_TOPIC(topic), RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_COPY),
       RD_KAFKA_V_KEY(key, strlen(key)), // Ensure key is not NULL
-      RD_KAFKA_V_VALUE(value, valueSize), RD_KAFKA_V_OPAQUE(NULL),
-      RD_KAFKA_V_END);
+      RD_KAFKA_V_VALUE(value, valueSize), RD_KAFKA_V_OPAQUE(NULL), RD_KAFKA_V_END);
 
   if (err) {
     g_error("Failed to produce to topic %s: %s", topic, rd_kafka_err2str(err));
@@ -320,41 +314,37 @@ rd_kafka_message_t *poll_wrapper(rd_kafka_t *rk, int timeout_ms) {
   return msg;
 }
 
-int serializeAgent(Agent *agent) {
+int serializeEntity(Entity *user) {
   int mask1 = 0x01;
-  int mask2 = 0x03;
   int mask3 = 0x07;
+  int mask4 = 0x0F;
   int mask5 = 0x1F;
   int mask7 = 0x7F;
-  int mask8 = 0xFF;
 
   int res = 0;
-  res |= (agent->type & mask2);
-  res |= (agent->canMove & mask1) << 2;
-  res |= (agent->status & mask3) << 3;
-  res |= (agent->coord.x & mask5) << 6;
-  res |= (agent->coord.y & mask5) << 11;
-  res |= (agent->id & mask7) << 16;
-  res |= (agent->obj & mask8) << 23;
-  res |= (agent->carryingCustomer & mask1) << 31;
+  res |= (user->type & mask3);
+  res |= (user->status & mask4) << 3;
+  res |= (user->coord.x & mask5) << 7;
+  res |= (user->coord.y & mask5) << 12;
+  res |= (user->id & mask7) << 17;
+  res |= ((user->obj - 'a') & mask7) << 24;
+  res |= (user->carryingCustomer & mask1) << 31;
 
   return res;
 }
 
-void deserializeAgent(Agent *dest, int agent) {
+void deserializeEntity(Entity *dest, int user) {
   int mask1 = 0x01;
-  int mask2 = 0x03;
   int mask3 = 0x07;
+  int mask4 = 0x0F;
   int mask5 = 0x1F;
   int mask7 = 0x7F;
-  int mask8 = 0xFF;
 
-  dest->type = agent & mask2;
-  dest->canMove = (agent >> 2) & mask1;
-  dest->status = (agent >> 3) & mask3;
-  dest->coord.x = (agent >> 6) & mask5;
-  dest->coord.y = (agent >> 11) & mask5;
-  dest->id = (agent >> 16) & mask7;
-  dest->obj = (agent >> 23) & mask8;
-  dest->carryingCustomer = (agent >> 31) & mask1;
+  dest->type = user & mask3;
+  dest->status = (user >> 3) & mask4;
+  dest->coord.x = (user >> 7) & mask5;
+  dest->coord.y = (user >> 12) & mask5;
+  dest->id = (user >> 17) & mask7;
+  dest->obj = ((user >> 24) & mask7) + 'a';
+  dest->carryingCustomer = (user >> 31) & mask1;
 }

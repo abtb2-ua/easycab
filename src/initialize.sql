@@ -2,6 +2,10 @@ DROP DATABASE IF EXISTS db;
 CREATE DATABASE db;
 use db;
 
+CREATE TABLE session (
+  id CHAR(40) PRIMARY KEY
+);
+
 CREATE TABLE locations (
   id CHAR PRIMARY KEY,
   x INT NOT NULL,
@@ -58,7 +62,7 @@ BEGIN
   EXISTS(SELECT 1 FROM taxis WHERE customer = c.id AND carrying_customer = TRUE) 
   FROM customers c;
 
-  SELECT id, x, y, customer, moving AND can_move, carrying_customer, connected, can_move FROM taxis;
+  SELECT id, x, y, customer, moving, carrying_customer, connected, can_move FROM taxis;
 END !!
 
 -- ------------------------------------------------------------------------------

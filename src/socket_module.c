@@ -11,6 +11,7 @@ extern Address kafka, db;
 extern int gui_pipe[2];
 static rd_kafka_t *producer;
 static Request request;
+extern char session[UUID_LENGTH];
 
 void listenSocket(int listenPort) {
   int serverSocket = openSocket(listenPort);
@@ -23,32 +24,31 @@ void listenSocket(int listenPort) {
 
   while (true) {
     g_debug("Waiting connections");
-    int clientSocket =
-        accept(serverSocket, (struct sockaddr *)&address, &addrlen);
+    int customerSocket = accept(serverSocket, (struct sockaddr *)&address, &addrlen);
 
-    if (clientSocket == -1) {
+    if (customerSocket == -1) {
       g_warning("Error accepting connection");
       continue;
     }
 
     struct timeval timeout = {5, 0};
 
-    if (setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout,
-                   sizeof(timeout)) < 0) {
+    if (setsockopt(customerSocket, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) <
+        0) {
       g_warning("Error setting socket timeout");
-      close(clientSocket);
+      close(customerSocket);
       continue;
     }
 
     // pid_t pid = fork();
     // if (pid == 0) {
     //   close(serverSocket);
-    //   attend((int[]){clientSocket, counter});
+    //   attend((int[]){customerSocket, counter});
     //   exit(0);
     // }
-    // close(clientSocket);
+    // close(customerSocket);
     pthread_t thread;
-    pthread_create(&thread, NULL, attend, (int[]){clientSocket, counter});
+    pthread_create(&thread, NULL, attend, (int[]){customerSocket, counter});
     pthread_detach(thread);
 
     counter++;
@@ -56,7 +56,7 @@ void listenSocket(int listenPort) {
 }
 
 void *attend(void *args) {
-  int clientSocket = ((int *)args)[0];
+  int customerSocket = ((int *)args)[0];
   int counter = ((int *)args)[1];
   char buffer[BUFFER_SIZE];
   char prefix[20];
@@ -71,7 +71,7 @@ void *attend(void *args) {
   g_message("Processing authentication request %i", counter);
 
   while (continueLoop) {
-    if (read(clientSocket, buffer, BUFFER_SIZE) < 1) {
+    if (read(customerSocket, buffer, BUFFER_SIZE) < 1) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
         g_critical("%sTimeout reached on request %i", prefix, counter);
         break;
@@ -79,7 +79,7 @@ void *attend(void *args) {
         g_warning("%sError reading from the socket", prefix);
         g_debug("%sSending NACK", prefix);
         buffer[0] = NACK;
-        write(clientSocket, buffer, BUFFER_SIZE);
+        write(customerSocket, buffer, BUFFER_SIZE);
         continue;
       }
     }
@@ -93,8 +93,8 @@ void *attend(void *args) {
     case ENQ:
       g_debug("%sReceived ENQ", prefix);
       if (conn != NULL && mysql_ping(conn) &&
-          mysql_real_connect(conn, db.ip, "root", DB_PASSWORD, DB_NAME, db.port,
-                             NULL, CLIENT_MULTI_STATEMENTS)) {
+          mysql_real_connect(conn, db.ip, "root", DB_PASSWORD, DB_NAME, db.port, NULL,
+                             CLIENT_MULTI_STATEMENTS)) {
         g_debug("%sSent ACK", prefix);
         buffer[0] = ACK;
       } else {
@@ -102,7 +102,7 @@ void *attend(void *args) {
         g_debug("%sSent NACK", prefix);
         buffer[0] = NACK;
       }
-      write(clientSocket, buffer, BUFFER_SIZE);
+      write(customerSocket, buffer, BUFFER_SIZE);
       break;
 
     case STX:
@@ -118,32 +118,43 @@ void *attend(void *args) {
 
         char kafkaId[50];
         sprintf(kafkaId, "authenticate-central-%i-producer", counter);
-        producer = createKafkaAgent(&kafka, RD_KAFKA_PRODUCER, kafkaId);
-        request.subject =
-            reconnected ? REQUEST_TAXI_RECONNECT : REQUEST_NEW_TAXI;
+        producer = createKafkaUser(&kafka, RD_KAFKA_PRODUCER, kafkaId);
+        request.subject = reconnected ? REQUEST_TAXI_RECONNECT : REQUEST_NEW_TAXI;
         request.id = id;
+        memcpy(request.session, session, UUID_LENGTH);
         sendEvent(producer, "requests", &request, sizeof(request));
         g_message("Updated map");
       }
 
-      buffer[0] = idAvailable ? ACK : NACK;
+      buffer[0] = STX;
+      buffer[1] = idAvailable ? ACK : NACK;
+      memcpy(buffer + 2, session, UUID_LENGTH);
+      buffer[2 + UUID_LENGTH] = ETX;
 
-      write(clientSocket, buffer, BUFFER_SIZE);
+      buffer[2 + UUID_LENGTH + 1] = 0;
+      // LRC
+      for (int i = 0; i < 2 + UUID_LENGTH + 1; i++) {
+        buffer[2 + UUID_LENGTH + 1] ^= buffer[i];
+      }
+
+      write(customerSocket, buffer, BUFFER_SIZE);
       break;
 
     default:
       g_debug("Received: %i", buffer[0]);
       g_warning("%sUknown message received", prefix);
       buffer[0] = NACK;
-      write(clientSocket, buffer, BUFFER_SIZE);
+      write(customerSocket, buffer, BUFFER_SIZE);
     }
   }
 
   g_message("%sClosing connection", prefix);
-  close(clientSocket);
+  close(customerSocket);
   mysql_close(conn);
   mysql_library_end();
   pthread_exit(NULL);
+
+  return NULL;
 }
 
 bool checkId(MYSQL *conn, int id, bool *reconnected) {

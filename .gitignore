@@ -6,6 +6,10 @@ build/
 cores/
 launch.json
 *_o.*
-kafka-config
-server.properties
 *.tar
+docs/*
+
+!docs/*.bib
+!docs/*.tex
+!docs/*.pdf
+!docs/*.png

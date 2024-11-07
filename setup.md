@@ -33,3 +33,4 @@ cmake --build build && ./build/EC_Central 2400 localhost:9092 127.0.0.1:3306
 cmake --build build && ./build/EC_DE 192.168.0.17:2400 localhost:9092 8000 5
 cmake --build build && ./build/EC_Customer localhost:9092 b 11 5
 
+sudo docker run --rm -e TERM=xterm-256color -ti easycab_image

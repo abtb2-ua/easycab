@@ -13,6 +13,7 @@
 enum RESPONSE_TOPICS { RESPONSE_CUSTOMER, RESPONSE_TAXI, RESPONSE_MAP };
 
 extern Address db, kafka;
+extern char session[UUID_LENGTH];
 
 static rd_kafka_t *producer;
 static rd_kafka_t *consumer;
@@ -37,6 +38,7 @@ void startKafkaServer() {
 
   init();
 
+  memcpy(response.session, session, UUID_LENGTH);
   response.subject = MRESPONSE_MAP_UPDATE;
   respond(RESPONSE_MAP);
   g_message("Sent initial map to responses topic");
@@ -49,6 +51,11 @@ void startKafkaServer() {
 
     memcpy(&request, msg->payload, sizeof(Request));
 
+    if (strcmp(session, request.session) != 0 && request.subject != REQUEST_NEW_CUSTOMER) {
+      g_debug("Message from a past session received");
+      continue;
+    }
+
     switch (request.subject) {
     case REQUEST_NEW_TAXI:
       g_message("New taxi registered. Updating the map...");
@@ -58,7 +65,7 @@ void startKafkaServer() {
       checkQueue();
       break;
 
-    case REQUEST_NEW_CLIENT:
+    case REQUEST_NEW_CUSTOMER:
       insertCustomer(&request);
       break;
 
@@ -67,11 +74,13 @@ void startKafkaServer() {
       refreshTaxiInstructions(&request, true);
       break;
 
-    case STRAY_TAXI:
     case REQUEST_TAXI_FATAL_ERROR:
+    case REQUEST_DISCONNECT_TAXI:
+    case STRAY_TAXI:
       disconnectTaxi(&request);
       break;
 
+    case REQUEST_DISCONNECT_CUSTOMER:
     case STRAY_CUSTOMER:
       disconnectCustomer(&request);
       break;
@@ -91,14 +100,6 @@ void startKafkaServer() {
 
     case REQUEST_TAXI_MOVE:
       moveTaxi(&request);
-      break;
-
-    case REQUEST_DISCONNECT_TAXI:
-      disconnectTaxi(&request);
-      break;
-
-    case REQUEST_DISCONNECT_CLIENT:
-      disconnectCustomer(&request);
       break;
 
     case REQUEST_TAXI_CANT_MOVE:
@@ -128,17 +129,17 @@ void startKafkaServer() {
 void init() {
   char kafkaId[50];
   sprintf(kafkaId, "central-producer");
-  producer = createKafkaAgent(&kafka, RD_KAFKA_PRODUCER, kafkaId);
+  producer = createKafkaUser(&kafka, RD_KAFKA_PRODUCER, kafkaId);
   sprintf(kafkaId, "central-consumer");
-  consumer = createKafkaAgent(&kafka, RD_KAFKA_CONSUMER, kafkaId);
+  consumer = createKafkaUser(&kafka, RD_KAFKA_CONSUMER, kafkaId);
 
   subscribeToTopics(&consumer, (const char *[]){"requests"}, 1);
 
   mysql_library_init(0, NULL, NULL);
   conn = mysql_init(NULL);
 
-  if (!mysql_real_connect(conn, db.ip, "root", DB_PASSWORD, DB_NAME, db.port,
-                          NULL, CLIENT_MULTI_STATEMENTS)) {
+  if (!mysql_real_connect(conn, db.ip, "root", DB_PASSWORD, DB_NAME, db.port, NULL,
+                          CLIENT_MULTI_STATEMENTS)) {
     mysql_close(conn);
     g_error("Error connecting to database");
   }
@@ -152,7 +153,7 @@ void loadMap() {
   MYSQL_RES *r_taxis = NULL;
   MYSQL_ROW row;
   int index = 0;
-  Agent agent;
+  Entity user;
 
   g_debug("Query: CALL LoadMap()");
   if (mysql_query(conn, "CALL LoadMap()")) {
@@ -164,45 +165,44 @@ void loadMap() {
   store_result_wrapper(r_customers);
   store_result_wrapper(r_taxis);
 
-  agent.type = LOCATION;
+  user.type = ENTITY_LOCATION;
   while ((row = mysql_fetch_row(r_locations))) {
-    agent.id = row[0][0];
-    agent.coord.x = atoi(row[1]);
-    agent.coord.y = atoi(row[2]);
+    user.id = row[0][0];
+    user.coord.x = atoi(row[1]);
+    user.coord.y = atoi(row[2]);
 
-    response.map[index] = serializeAgent(&agent);
+    response.map[index] = serializeEntity(&user);
     index++;
   }
 
-  agent.type = CLIENT;
+  user.type = ENTITY_CUSTOMER;
   while ((row = mysql_fetch_row(r_customers))) {
-    agent.id = row[0][0];
-    agent.coord.x = atoi(row[1]);
-    agent.coord.y = atoi(row[2]);
-    agent.obj = row[3] ? row[3][0] : -1;
-    agent.status = (row[3] == NULL ? CLIENT_OTHER
-                    : atoi(row[4]) ? CLIENT_IN_QUEUE
-                    : atoi(row[5]) ? CLIENT_IN_TAXI
-                                   : CLIENT_WAITING_TAXI);
+    user.id = row[0][0];
+    user.coord.x = atoi(row[1]);
+    user.coord.y = atoi(row[2]);
+    user.obj = row[3] ? row[3][0] : -1;
+    user.status = (row[3] == NULL ? STATUS_CUSTOMER_OTHER
+                   : atoi(row[4]) ? STATUS_CUSTOMER_IN_QUEUE
+                   : atoi(row[5]) ? STATUS_CUSTOMER_IN_TAXI
+                                  : STATUS_CUSTOMER_WAITING_TAXI);
 
-    response.map[index] = serializeAgent(&agent);
+    response.map[index] = serializeEntity(&user);
     index++;
   }
 
-  agent.type = TAXI;
+  user.type = ENTITY_TAXI;
   while ((row = mysql_fetch_row(r_taxis))) {
-    agent.id = atoi(row[0]);
-    agent.coord.x = atoi(row[1]);
-    agent.coord.y = atoi(row[2]);
-    agent.obj = row[3] ? row[3][0] : -1;
-    agent.status = (!atoi(row[6])   ? TAXI_DISCONNECTED
-                    : !atoi(row[4]) ? TAXI_STOPPED
-                    : atoi(row[5])  ? TAXI_CARRYING_CLIENT
-                                    : TAXI_EMPTY);
-    agent.carryingCustomer = atoi(row[5]);
-    agent.canMove = atoi(row[7]);
+    user.id = atoi(row[0]);
+    user.coord.x = atoi(row[1]);
+    user.coord.y = atoi(row[2]);
+    user.obj = row[3] ? row[3][0] : -1;
+    user.status = (!atoi(row[6])  ? STATUS_TAXI_DISCONNECTED
+                   : atoi(row[4]) ? STATUS_TAXI_MOVING
+                   : atoi(row[7]) ? STATUS_TAXI_STOPPED
+                                  : STATUS_TAXI_CANT_MOVE);
+    user.carryingCustomer = atoi(row[5]);
 
-    response.map[index] = serializeAgent(&agent);
+    response.map[index] = serializeEntity(&user);
     index++;
   }
 
@@ -226,8 +226,7 @@ void moveTaxi(Request *request) {
   MYSQL_ROW row;
   char query[200];
 
-  sprintf(query, "CALL MoveTaxi(%i, %i, %i)", request->id, request->coord.x,
-          request->coord.y);
+  sprintf(query, "CALL MoveTaxi(%i, %i, %i)", request->id, request->coord.x, request->coord.y);
 
   if (mysql_query(conn, query)) {
     g_warning("Error executing query %s: %s", query, mysql_error(conn));
@@ -240,8 +239,7 @@ void moveTaxi(Request *request) {
   if (row[0] != NULL) {
     g_warning("Error moving taxi %i: %s", request->id, row[0]);
   } else {
-    g_message("Taxi %d moved to [%i, %i]", request->id, request->coord.x + 1,
-              request->coord.y + 1);
+    g_message("Taxi %d moved to [%i, %i]", request->id, request->coord.x + 1, request->coord.y + 1);
 
     response.subject = MRESPONSE_MAP_UPDATE;
     respond(RESPONSE_MAP);
@@ -269,8 +267,8 @@ void insertCustomer(Request *request) {
   MYSQL_RES *result = NULL;
   MYSQL_ROW row;
   char query[200];
-  sprintf(query, "CALL InsertCustomer('%c', %i, %i)", request->id,
-          request->coord.x, request->coord.y);
+  sprintf(query, "CALL InsertCustomer('%c', %i, %i)", request->id, request->coord.x,
+          request->coord.y);
   response.id = request->id;
   strcpy(response.data, request->data);
 
@@ -284,10 +282,7 @@ void insertCustomer(Request *request) {
   row = mysql_fetch_row(result);
   if (row[0] == NULL) {
     g_message("Inserted customer '%c'", request->id);
-    response.subject =
-        CRESPONSE_CONFIRMATION; // TODO: Bug in customer where if we try to init
-                                // to customers with the same id, both receive
-                                // error and disconnect
+    response.subject = CRESPONSE_CONFIRMATION;
 
     respond(RESPONSE_CUSTOMER);
   } else {
@@ -332,9 +327,7 @@ void processServiceRequest(Request *request) {
     row = mysql_fetch_row(result);
 
     if (row[0] == NULL) {
-      g_message(
-          "There aren't any available taxis. Adding customer '%c' to queue",
-          customerId);
+      g_message("There aren't any available taxis. Adding customer '%c' to queue", customerId);
 
       sprintf(query, "CALL AddToQueue('%c')", customerId);
       g_debug("Query: %s", query);
@@ -350,8 +343,7 @@ void processServiceRequest(Request *request) {
       response.id = customerId;
 
       if (row[0] != NULL) {
-        g_warning("Error adding customer '%c' to queue: %s", customerId,
-                  row[0]);
+        g_warning("Error adding customer '%c' to queue: %s", customerId, row[0]);
         response.data[0] = false;
         respond(RESPONSE_CUSTOMER);
         return;
@@ -362,8 +354,7 @@ void processServiceRequest(Request *request) {
       return;
     }
 
-    g_message("Service accepted. Taxi %s assigned to customer '%c'", row[2],
-              customerId);
+    g_message("Service accepted. Taxi %s assigned to customer '%c'", row[2], customerId);
 
     response.subject = CRESPONSE_SERVICE_ACCEPTED;
     response.id = customerId;
@@ -375,9 +366,10 @@ void processServiceRequest(Request *request) {
 
     respond(RESPONSE_CUSTOMER);
 
-    response.subject = TRESPONSE_GOTO;
+    response.subject = TRESPONSE_START_SERVICE;
     response.id = taxiId;
     memcpy(response.data, &customerCoord, sizeof(Coordinate));
+    response.data[sizeof(Coordinate)] = customerId;
     g_message("Ordering taxi %i to go to [%i, %i]", taxiId, customerCoord.x + 1,
               customerCoord.y + 1);
     respond(RESPONSE_TAXI);
@@ -413,15 +405,14 @@ void refreshTaxiInstructions(Request *request, bool reconnected) {
 
     if (status == 0 || status == 3) {
       if (!reconnected) {
-        g_message("Taxi %i has arrived to [%i, %i]", request->id,
-                  atoi(row[1]) + 1, atoi(row[2]) + 1);
+        g_message("Taxi %i has arrived to [%i, %i]", request->id, atoi(row[1]) + 1,
+                  atoi(row[2]) + 1);
       }
       if (status == 0) {
         response.subject = MRESPONSE_MAP_UPDATE;
 
         respond(RESPONSE_MAP);
-        sprintf(query, "UPDATE taxis SET available = TRUE WHERE id = %i",
-                request->id);
+        sprintf(query, "UPDATE taxis SET available = TRUE WHERE id = %i", request->id);
         if (mysql_query(conn, query)) {
           g_warning("Error executing query %s: %s", query, mysql_error(conn));
           return;
@@ -429,8 +420,7 @@ void refreshTaxiInstructions(Request *request, bool reconnected) {
         checkQueue();
       } else {
         Coordinate coord = {.x = atoi(row[1]), .y = atoi(row[2])};
-        g_message("Taxi will resume its service by going to [%i, %i]",
-                  coord.x + 1, coord.y + 1);
+        g_message("Taxi will resume its service by going to [%i, %i]", coord.x + 1, coord.y + 1);
         response.subject = TRESPONSE_GOTO;
         memcpy(response.data, &coord, sizeof(Coordinate));
         respond(RESPONSE_TAXI);
@@ -511,15 +501,17 @@ void completeService(Request *request) {
   } else {
     store_result_wrapper(result);
     row = mysql_fetch_row(result);
-    g_message(
-        "Customer '%s' service has been completed. Taxi %i left the customer "
-        "on the location %s [%i, %i] and is now available",
-        row[0], request->id, row[1], atoi(row[2]) + 1, atoi(row[3]) + 1);
+    g_message("Customer '%s' service has been completed. Taxi %i left the customer "
+              "on the location %s [%i, %i] and is now available",
+              row[0], request->id, row[1], atoi(row[2]) + 1, atoi(row[3]) + 1);
 
     response.subject = CRESPONSE_SERVICE_COMPLETED;
     response.id = row[0][0];
-
     respond(RESPONSE_CUSTOMER);
+
+    response.subject = TRESPONSE_SERVICE_COMPLETED;
+    response.id = request->id;
+    respond(RESPONSE_TAXI);
 
     checkQueue();
   }
@@ -567,8 +559,7 @@ void disconnectCustomer(Request *request) {
   }
 
   if (mysql_affected_rows(conn) == 0) {
-    g_warning("Error disconnecting customer '%c': No rows affected",
-              request->id);
+    g_warning("Error disconnecting customer '%c': No rows affected", request->id);
     return;
   }
 
@@ -627,8 +618,7 @@ void sendOrder(Request *request) {
   response.id = request->id;
   if (request->subject == ORDER_GOTO) {
     response.subject = TRESPONSE_GOTO;
-    sprintf(query, "UPDATE taxis SET available = FALSE WHERE id = %i",
-            request->id);
+    sprintf(query, "UPDATE taxis SET available = FALSE WHERE id = %i", request->id);
     if (mysql_query(conn, query)) {
       g_warning("Error executing query %s: %s", query, mysql_error(conn));
       return;
@@ -636,8 +626,8 @@ void sendOrder(Request *request) {
 
     memcpy(response.data, &request->coord, sizeof(Coordinate));
     respond(RESPONSE_TAXI);
-    g_message("Sent order to taxi %i to go to [%i, %i]", request->id,
-              request->coord.x + 1, request->coord.y + 1);
+    g_message("Sent order to taxi %i to go to [%i, %i]", request->id, request->coord.x + 1,
+              request->coord.y + 1);
   }
 
   MYSQL_RES *err_result = NULL;
@@ -665,8 +655,8 @@ void sendOrder(Request *request) {
   row = mysql_fetch_row(result);
 
   if (row[0] != NULL) {
-    response.subject = request->subject == ORDER_STOP ? CRESPONSE_TAXI_RESUMED
-                                                      : CRESPONSE_TAXI_STOPPED;
+    response.subject =
+        request->subject == ORDER_STOP ? CRESPONSE_TAXI_RESUMED : CRESPONSE_TAXI_STOPPED;
     response.id = row[0][0];
     respond(RESPONSE_CUSTOMER);
   }
@@ -674,8 +664,7 @@ void sendOrder(Request *request) {
   if (row[0] != NULL) {
     g_warning("Error changing motion: %s", row[0]);
   } else {
-    response.subject =
-        request->subject == ORDER_STOP ? TRESPONSE_STOP : TRESPONSE_CONTINUE;
+    response.subject = request->subject == ORDER_STOP ? TRESPONSE_STOP : TRESPONSE_CONTINUE;
     loadMap();
     respond(RESPONSE_TAXI);
     g_message("Sent order to taxi %i to %s", request->id,
@@ -701,8 +690,7 @@ void resumePosition(Request *request) {
 
   store_result_wrapper(result);
   if (mysql_num_rows(result) == 0) {
-    g_warning("Error resuming position of taxi %i: Taxi not found",
-              request->id);
+    g_warning("Error resuming position of taxi %i: Taxi not found", request->id);
     return;
   }
   row = mysql_fetch_row(result);
@@ -711,8 +699,7 @@ void resumePosition(Request *request) {
     g_warning("Error resuming position of taxi %i", request->id);
   } else {
     Coordinate coord = {.x = atoi(row[0]), .y = atoi(row[1])};
-    g_message("Taxi %i resumed its service from [%i, %i]", request->id,
-              coord.x + 1, coord.y + 1);
+    g_message("Taxi %i resumed its service from [%i, %i]", request->id, coord.x + 1, coord.y + 1);
     response.id = request->id;
     response.subject = TRESPONSE_CHANGE_POSITION;
     memcpy(response.data, &coord, sizeof(Coordinate));
@@ -728,8 +715,7 @@ void setTaxiCanMove(int taxiId, bool canMove) {
   MYSQL_ROW row;
   char query[200];
 
-  sprintf(query, "UPDATE taxis SET can_move = %i WHERE id = %i", canMove,
-          taxiId);
+  sprintf(query, "UPDATE taxis SET can_move = %i WHERE id = %i", canMove, taxiId);
   g_debug("Query: %s", query);
   if (mysql_query(conn, query)) {
     g_warning("Error executing query %s: %s", query, mysql_error(conn));
@@ -751,8 +737,7 @@ void setTaxiCanMove(int taxiId, bool canMove) {
   row = mysql_fetch_row(result);
 
   if (row[0] != NULL) {
-    response.subject =
-        canMove ? CRESPONSE_TAXI_RESUMED : CRESPONSE_TAXI_STOPPED;
+    response.subject = canMove ? CRESPONSE_TAXI_RESUMED : CRESPONSE_TAXI_STOPPED;
     response.id = row[0][0];
     respond(RESPONSE_CUSTOMER);
   }
@@ -773,9 +758,9 @@ void *checkStrays() {
   MYSQL *localConn = mysql_init(NULL);
   MYSQL_RES *result = NULL;
   MYSQL_ROW row;
-  rd_kafka_t *producer = createKafkaAgent(&kafka, RD_KAFKA_PRODUCER,
-                                          "central-stray-check-producer");
+  rd_kafka_t *producer = createKafkaUser(&kafka, RD_KAFKA_PRODUCER, "central-stray-check-producer");
   Request request;
+  memcpy(request.session, session, UUID_LENGTH);
 
   bool resetDb = strcmp(getenv("RESET_DB"), "true") == 0;
 
@@ -784,12 +769,16 @@ void *checkStrays() {
     usleep(PING_GRACE_TIME * 1000 * 1000);
   }
 
-  if (!mysql_real_connect(localConn, db.ip, "root", DB_PASSWORD, DB_NAME,
-                          db.port, NULL, CLIENT_MULTI_STATEMENTS)) {
+  g_debug("Connecting to database");
+
+  if (!mysql_real_connect(localConn, db.ip, "root", DB_PASSWORD, DB_NAME, db.port, NULL,
+                          CLIENT_MULTI_STATEMENTS)) {
     mysql_close(localConn);
     g_warning("Error connecting to database. Strays check will be disabled");
     return NULL;
   }
+
+  g_debug("Connected to database");
 
   while (true) {
     usleep(USER_GRACE_TIME * 0.5 * 1000 * 1000);
@@ -806,6 +795,7 @@ void *checkStrays() {
       mysql_next_result(localConn);
 
       while ((row = mysql_fetch_row(result))) {
+        g_debug("Cathed a stray: %s", row[1]);
         request.subject = atoi(row[0]) ? STRAY_TAXI : STRAY_CUSTOMER;
         request.id = request.subject == STRAY_TAXI ? atoi(row[1]) : row[1][0];
         sendEvent(producer, "requests", &request, sizeof(Request));
@@ -822,11 +812,9 @@ void refreshLastUpdate(Request *request) {
   char query[200];
 
   if (request->subject == PING_CUSTOMER) {
-    sprintf(query, "UPDATE customers SET last_update = NOW() WHERE id = '%c'",
-            request->id);
+    sprintf(query, "UPDATE customers SET last_update = NOW() WHERE id = '%c'", request->id);
   } else {
-    sprintf(query, "UPDATE taxis SET last_update = NOW() WHERE id = %i",
-            request->id);
+    sprintf(query, "UPDATE taxis SET last_update = NOW() WHERE id = %i", request->id);
   }
 
   g_debug("Query: %s", query);

@@ -11,7 +11,7 @@ RUN apt update && apt install -y \
     pkg-config \
     gcc \
     neovim
-
+RUN apt install mysql-client
     
 WORKDIR /home/easycab
 COPY CMakeLists.txt .
@@ -23,6 +23,7 @@ COPY setup.md .
 
 
 RUN mkdir build
+WORKDIR /home/easycab/build
 
 RUN cd build && cmake .. && make
 

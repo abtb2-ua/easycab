@@ -22,10 +22,10 @@ int taxiStopped;
 int seconds = 0;
 bool fatal = false;
 pthread_mutex_t mut;
-bool stop;
+bool stopProgram;
 // These are sent to the taxi always, even if no option has been selected
 // Thus, need to be given a default value
-IMPORTANCE importance = MINOR;
+IMPORTANCE importance = IMP_MINOR;
 int reason = 0;
 // In seconds, time given to the taxi to send a message. If no message
 // is received, the taxi is considered disconnected
@@ -33,25 +33,46 @@ const int COURTESY_TIME = 1500;
 const int MENU_WIDTH = 28;
 const int MENU_HEIGHT = 8;
 const int POPUP_WIDTH = 60;
-#define MAX_LINES 10
 // -4 for borders and margins and +1 for '\0'
 #define LINE_LENGTH POPUP_WIDTH - 3
+
 #define OPTIONS_MARGIN 5
 
-#define dispose(win)                                                           \
-  if (win) {                                                                   \
-    werase(win);                                                               \
-    wrefresh(win);                                                             \
-    delwin(win);                                                               \
-    win = NULL;                                                                \
+#define dispose(win)                                                                               \
+  if (win) {                                                                                       \
+    werase(win);                                                                                   \
+    wrefresh(win);                                                                                 \
+    delwin(win);                                                                                   \
+    win = NULL;                                                                                    \
   }
 
+/// @brief Parses the arguments passed to the program
+///
+/// @param argc number of arguments
+/// @param argv array of arguments
 void checkArguments(int argc, char *argv[]);
+
+/// @brief Intended to be executed by a separate thread or process. Acts as a server to the taxi.
+/// Handles the communication with it until the program ends. Ends the program when the
+/// communication with the taxi is lost
+///
+/// @return void* Returns NULL always. It just exists to fill the required signature for a thread
+/// intended function
 void *communicateWithTaxi();
+
+/// @brief Handles the input from the user in form of an ncurses based menu
 void menu();
+
+/// @brief Prints the menu in the ncurses window
+///
+/// @param win Window in which the menu will be printed
+/// @param selectedOption Option selected by the user
 void printMenu(WINDOW *win, int selectedOption);
-int split(char dest[MAX_LINES][LINE_LENGTH], const char text[]);
-int find(const char text[], char character);
+
+/// @brief Gets the value of the stop flag locking and unlocking the respective mutex. Used merely
+/// for readability purposes
+///
+/// @return bool Value of the stop flag
 bool getStop();
 
 int main(int argc, char *argv[]) {
@@ -140,7 +161,7 @@ void *communicateWithTaxi() {
   }
 
   pthread_mutex_lock(&mut);
-  stop = true;
+  stopProgram = true;
   pthread_mutex_unlock(&mut);
 
   return NULL;
@@ -161,8 +182,8 @@ void menu() {
 
   getmaxyx(stdscr, maxy, maxx);
 
-  WINDOW *menu_win = newwin(MENU_HEIGHT, MENU_WIDTH, (maxy - MENU_HEIGHT) / 2,
-                            (maxx - MENU_WIDTH) / 2);
+  WINDOW *menu_win =
+      newwin(MENU_HEIGHT, MENU_WIDTH, (maxy - MENU_HEIGHT) / 2, (maxx - MENU_WIDTH) / 2);
   WINDOW *pop_up = NULL;
   WINDOW *clock = NULL;
   keypad(menu_win, TRUE);
@@ -196,16 +217,16 @@ void menu() {
         pthread_mutex_lock(&mut);
         if (selectedOption == 0) {
           seconds = MINOR_WAIT_TIME;
-          importance = MINOR;
+          importance = IMP_MINOR;
         } else if (selectedOption == 1) {
           seconds = NORMAL_WAIT_TIME;
-          importance = NORMAL;
+          importance = IMP_NORMAL;
         } else if (selectedOption == 2) {
           seconds = MAJOR_WAIT_TIME;
-          importance = MAJOR;
+          importance = IMP_MAJOR;
         } else if (selectedOption == 3) {
           seconds = FATAL_WAIT_TIME;
-          importance = FATAL;
+          importance = IMP_FATAL;
         } else {
           pthread_mutex_unlock(&mut);
           break;
@@ -228,7 +249,7 @@ void menu() {
           dispose(clock);
         }
 
-        numLines = split(lines, inconveniences[importance][reason]);
+        numLines = split(lines, inconveniences[importance][reason], LINE_LENGTH);
         height = 4 + numLines + numLines % 2; // make it even
         margin = 1;
       } else {
@@ -246,15 +267,13 @@ void menu() {
       }
 
       if (!pop_up) {
-        pop_up = newwin(height, POPUP_WIDTH, (maxy - height) / 2,
-                        (maxx - POPUP_WIDTH) / 2);
+        pop_up = newwin(height, POPUP_WIDTH, (maxy - height) / 2, (maxx - POPUP_WIDTH) / 2);
 
         wattron(menu_win, A_DIM);
         printMenu(menu_win, selectedOption);
         wattroff(menu_win, A_DIM);
         for (int i = 0; i < numLines; i++) {
-          mvwprintw(pop_up, i + margin, (POPUP_WIDTH - strlen(lines[i])) / 2,
-                    "%s\n", lines[i]);
+          mvwprintw(pop_up, i + margin, (POPUP_WIDTH - strlen(lines[i])) / 2, "%s\n", lines[i]);
         }
         box(pop_up, 0, 0);
         wrefresh(pop_up);
@@ -277,8 +296,8 @@ void menu() {
           char margin[OPTIONS_MARGIN];
           for (int i = 0; i < OPTIONS_MARGIN; i++)
             margin[i] = ' ';
-          int len = strlen(options[0]) + strlen(options[1]) +
-                    strlen(options[2]) + 2 * OPTIONS_MARGIN;
+          int len =
+              strlen(options[0]) + strlen(options[1]) + strlen(options[2]) + 2 * OPTIONS_MARGIN;
           wmove(clock, 0, (POPUP_WIDTH - 2 - len) / 2);
           for (int i = 0; i < 3; i++) {
             if (i == selectedFatalOption)
@@ -289,8 +308,7 @@ void menu() {
               waddstr(clock, margin);
           }
         } else {
-          mvwprintw(clock, 0, (POPUP_WIDTH - 2 - 10) / 2, "%2.i seconds",
-                    seconds);
+          mvwprintw(clock, 0, (POPUP_WIDTH - 2 - 10) / 2, "%2.i seconds", seconds);
         }
         wrefresh(clock);
       }
@@ -315,8 +333,7 @@ void menu() {
             dispose(pop_up) dispose(clock) dispose(menu_win);
             erase();
             char *msg = "Terminating...";
-            WINDOW *terminate = newwin(1, strlen(msg), (maxy - 1) / 2,
-                                       (maxx - strlen(msg)) / 2);
+            WINDOW *terminate = newwin(1, strlen(msg), (maxy - 1) / 2, (maxx - strlen(msg)) / 2);
             wattron(terminate, COLOR_PAIR(PASTEL_RED));
             waddstr(terminate, msg);
             wrefresh(terminate);
@@ -334,7 +351,7 @@ void menu() {
   bool error = false;
 
   pthread_mutex_lock(&mut);
-  if (stop) // Hasn't been stopped by the user
+  if (stopProgram) // Hasn't been stopped by the user
     error = true;
   pthread_mutex_unlock(&mut);
 
@@ -369,56 +386,17 @@ void printMenu(WINDOW *win, int selectedOption) {
   wattron(win, A_BOLD);
   mvwprintw(win, 1, 1, "Options");
   wattroff(win, A_BOLD);
-  mvwprintw(win, 2, 1, "[%s] Minor inconvenience",
-            selectedOption == 0 ? ">" : " ");
+  mvwprintw(win, 2, 1, "[%s] Minor inconvenience", selectedOption == 0 ? ">" : " ");
   mvwprintw(win, 3, 1, "[%s] Inconvenience", selectedOption == 1 ? ">" : " ");
-  mvwprintw(win, 4, 1, "[%s] Major inconvenience",
-            selectedOption == 2 ? ">" : " ");
+  mvwprintw(win, 4, 1, "[%s] Major inconvenience", selectedOption == 2 ? ">" : " ");
   mvwprintw(win, 5, 1, "[%s] Fatal error", selectedOption == 3 ? ">" : " ");
   mvwprintw(win, 6, 1, "[%s] Exit", selectedOption == 4 ? ">" : " ");
   wrefresh(win);
 }
 
-int split(char lines[MAX_LINES][LINE_LENGTH], const char text[]) {
-  char word[20];
-  int p = 0;
-  int p2 = 0;
-  int p3 = 0;
-  int currentLine = 0;
-  lines[0][0] = '\0';
-  while (p < strlen(text)) {
-    p2 = find(text + p, ' ');
-    if (p2 == -1) {
-      p2 = strlen(text + p);
-    }
-    strncpy(word, text + p, p2);
-    word[p2] = '\0';
-    // +2 for ' ' and '\0'
-    if (strlen(lines[currentLine]) + p2 + 2 > LINE_LENGTH) {
-      currentLine++;
-      lines[currentLine][0] = '\0';
-      p3 = 0;
-    }
-    sprintf(lines[currentLine] + p3, "%s ", word);
-    p = p + p2 + 1;
-    p3 = p3 + p2 + 1;
-  }
-  lines[currentLine][p3 + strlen(word) + 1] = '\0';
-  return currentLine + 1;
-}
-
-int find(const char text[], char character) {
-  int i;
-  for (i = 0; i < strlen(text); i++) {
-    if (text[i] == character)
-      return i;
-  }
-  return -1;
-}
-
 bool getStop() {
   pthread_mutex_lock(&mut);
-  bool b = stop;
+  bool b = stopProgram;
   pthread_mutex_unlock(&mut);
   return b;
 }

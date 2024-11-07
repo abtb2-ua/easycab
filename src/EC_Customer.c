@@ -2,29 +2,56 @@
 #include "glib.h"
 #include <librdkafka/rdkafka.h>
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 
-Address kafka;
-rd_kafka_t *producer;
-rd_kafka_t *consumer;
-char id;
-Request request;
-Response response;
-Coordinate pos;
+// Communication variables
+static Address kafka;
+static rd_kafka_t *producer;
+static rd_kafka_t *consumer;
+static Request request;
+static Response response;
 
-void sendRequest() {
-  sendEvent(producer, "requests", &request, sizeof(request));
-}
+// Customer variables
+static char id;
+static Coordinate pos;
 
+void sendRequest() { sendEvent(producer, "requests", &request, sizeof(request)); }
+
+/// @brief Prints a random filler message while waiting to ask for the next service
 void printRandomFillerMessage();
+
+/// @brief Checks the arguments passed to the program
+///
+/// @param argc Number of arguments
+/// @param argv Array of arguments
+/// @param fileName Output argument. File name to read the services from
 void checkArguments(int argc, char *argv[], char *fileName);
+
+/// @brief Reads the file containing the services to be asked
+///
+/// @param fileName File name to read the services from
+/// @param services Output argument. Array of services to be asked
 void readFile(char *fileName, char *services);
-void connectToCentral(rd_kafka_t *auth_consumer);
+
+/// @brief Carries through the authentication process with the central
+void connectToCentral();
+
+/// @brief Asks for a service and handles the communication with the central until the service is
+/// completed
+///
+/// @param service Service to be asked
 void askService(char service);
-void *ping();
+
+/// @brief Intended to be executed by a separate thread or process. Continuously pings the central
+/// to inform that the customer is still active
+///
+/// @param session Session id of the system
+/// @return void* Returns NULL always. It just exists to fill the required signature for a thread
+/// intended function
+void *ping(void *session);
 
 int main(int argc, char *argv[]) {
-  rd_kafka_t *auth_consumer;
   char fileName[100];
   char services[100];
   char kafkaId[50];
@@ -34,22 +61,21 @@ int main(int argc, char *argv[]) {
   readFile(fileName, services);
 
   sprintf(kafkaId, "customer-%c-producer", id);
-  producer = createKafkaAgent(&kafka, RD_KAFKA_PRODUCER, kafkaId);
+  producer = createKafkaUser(&kafka, RD_KAFKA_PRODUCER, kafkaId);
   sprintf(kafkaId, "customer-%c-consumer", id);
 
-  consumer = createKafkaAgent(&kafka, RD_KAFKA_CONSUMER, kafkaId);
-  auth_consumer =
-      createKafkaAgent(&kafka, RD_KAFKA_CONSUMER, generate_unique_id());
+  consumer = createKafkaUser(&kafka, RD_KAFKA_CONSUMER, kafkaId);
+
   subscribeToTopics(&consumer, (const char *[]){"customer_responses"}, 1);
-  subscribeToTopics(&auth_consumer, (const char *[]){"customer_responses"}, 1);
 
   // Wait for metadata to load
   g_message("Loading...");
-  poll_wrapper(auth_consumer, 1000);
-  connectToCentral(auth_consumer);
+  poll_wrapper(consumer, 1000);
+
+  connectToCentral();
 
   pthread_t thread;
-  pthread_create(&thread, NULL, ping, NULL);
+  pthread_create(&thread, NULL, ping, request.session);
   pthread_detach(thread);
 
   for (int i = 0; i < strlen(services); i++) {
@@ -61,7 +87,7 @@ int main(int argc, char *argv[]) {
 
   g_message("There are no more services. Goodbye!");
 
-  request.subject = REQUEST_DISCONNECT_CLIENT;
+  request.subject = REQUEST_DISCONNECT_CUSTOMER;
   sendRequest();
 
   g_message("Exiting...");
@@ -102,8 +128,7 @@ void checkArguments(int argc, char *argv[], char *fileName) {
     g_error("Invalid id, must be between 'a' and 'z'. %s", usage);
 
   if (kafka.port < 1 || kafka.port > 65535)
-    g_error("Invalid kafka port (%i), must be between 0 and 65535. %s",
-            kafka.port, usage);
+    g_error("Invalid kafka port (%i), must be between 0 and 65535. %s", kafka.port, usage);
 }
 
 void readFile(char *fileName, char *services) {
@@ -130,13 +155,16 @@ void readFile(char *fileName, char *services) {
   fclose(file);
 }
 
-void connectToCentral(rd_kafka_t *auth_consumer) {
+void connectToCentral() {
+  rd_kafka_t *auth_consumer = createKafkaUser(&kafka, RD_KAFKA_CONSUMER, NULL);
+  subscribeToTopics(&auth_consumer, (const char *[]){"customer_responses"}, 1);
+
   rd_kafka_message_t *msg = NULL;
-  request.subject = REQUEST_NEW_CLIENT;
+  request.subject = REQUEST_NEW_CUSTOMER;
   request.id = id;
   request.coord = pos;
   g_message("Sending request for connection");
-  strcpy(request.data, generate_unique_id());
+  generate_unique_id(request.data);
   sendRequest();
 
   g_message("Waiting for confirmation");
@@ -157,8 +185,7 @@ void connectToCentral(rd_kafka_t *auth_consumer) {
     memcpy(&response, msg->payload, sizeof(response));
 
     if (response.id != id || strcmp(response.data, request.data) != 0 ||
-        (response.subject != CRESPONSE_CONFIRMATION &&
-         response.subject != CRESPONSE_ERROR)) {
+        (response.subject != CRESPONSE_CONFIRMATION && response.subject != CRESPONSE_ERROR)) {
       // g_debug("Id received: %c", response.id);
       // g_debug("Subject received: %i", response.subject);
       // g_debug("Unique id received: %s", response.data);
@@ -170,6 +197,7 @@ void connectToCentral(rd_kafka_t *auth_consumer) {
     if (response.subject == CRESPONSE_ERROR)
       g_error("Central rejected the connection");
 
+    memcpy(request.session, response.session, UUID_LENGTH);
     g_message("Central accepted the connection");
     break;
   }
@@ -221,8 +249,7 @@ void askService(char service) {
 
     case CRESPONSE_SERVICE_DENIED:
       if (response.data[0] == true)
-        g_message(
-            "There aren't any available taxis! You've been added to queue");
+        g_message("There aren't any available taxis! You've been added to queue");
       else
         g_error("Service denied");
       break;
@@ -244,29 +271,25 @@ void askService(char service) {
 
 void printRandomFillerMessage() {
   char *messages[10] = {
-      "Shopping at the mall...",
-      "Borrowing a book from the library...",
-      "Buying a Halloween costume...",
-      "Doing some chores...",
-      "Doing daily workout at the gym...",
-      "Visiting my grandma...",
-      "Strolling around downtown...",
-      "Watching a movie...",
-      "\"Studying\" for the exam...",
-      "Doing a job interview...",
+      "Shopping at the mall...",           "Borrowing a book from the library...",
+      "Buying a Halloween costume...",     "Doing some chores...",
+      "Doing daily workout at the gym...", "Visiting my grandma...",
+      "Strolling around downtown...",      "Watching a movie...",
+      "\"Studying\" for the exam...",      "Doing a job interview...",
   };
 
   g_message("%s\n", messages[rand() % 10]);
 }
 
-void *ping() {
-  rd_kafka_t *localProducer =
-      createKafkaAgent(&kafka, RD_KAFKA_PRODUCER, "customer-ping-producer");
+void *ping(void *session) {
+  rd_kafka_t *localProducer = createKafkaUser(&kafka, RD_KAFKA_PRODUCER, "customer-ping-producer");
   Request request;
   request.subject = PING_CUSTOMER;
+  memcpy(request.session, session, UUID_LENGTH);
   request.id = id;
 
   while (true) {
+    g_debug("Sending PING");
     sendEvent(localProducer, "requests", &request, sizeof(Request));
     usleep(PING_CADENCE * 1000 * 1000);
   }
