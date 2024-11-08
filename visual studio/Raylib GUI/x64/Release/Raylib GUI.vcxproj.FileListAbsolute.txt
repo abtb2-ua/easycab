@@ -1,0 +1,11 @@
+C:\Users\Aarón\OneDrive\Escritorio\easycab\easycab\visual studio\Raylib GUI\x64\Release\Raylib GUI.vcxproj.CopyComplete
+C:\Users\Aarón\OneDrive\Escritorio\easycab\easycab\visual studio\Raylib GUI\x64\Release\Raylib GUI.exe
+C:\Users\Aarón\OneDrive\Escritorio\easycab\easycab\visual studio\Raylib GUI\x64\Release\libcrypto-3-x64.dll
+C:\Users\Aarón\OneDrive\Escritorio\easycab\easycab\visual studio\Raylib GUI\x64\Release\libcurl.dll
+C:\Users\Aarón\OneDrive\Escritorio\easycab\easycab\visual studio\Raylib GUI\x64\Release\librdkafka.dll
+C:\Users\Aarón\OneDrive\Escritorio\easycab\easycab\visual studio\Raylib GUI\x64\Release\librdkafkacpp.dll
+C:\Users\Aarón\OneDrive\Escritorio\easycab\easycab\visual studio\Raylib GUI\x64\Release\libssl-3-x64.dll
+C:\Users\Aarón\OneDrive\Escritorio\easycab\easycab\visual studio\Raylib GUI\x64\Release\msvcp140.dll
+C:\Users\Aarón\OneDrive\Escritorio\easycab\easycab\visual studio\Raylib GUI\x64\Release\vcruntime140.dll
+C:\Users\Aarón\OneDrive\Escritorio\easycab\easycab\visual studio\Raylib GUI\x64\Release\zlib1.dll
+C:\Users\Aarón\OneDrive\Escritorio\easycab\easycab\visual studio\Raylib GUI\x64\Release\zstd.dll

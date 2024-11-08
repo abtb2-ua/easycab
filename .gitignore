@@ -13,3 +13,40 @@ docs/*
 !docs/*.tex
 !docs/*.pdf
 !docs/*.png
+
+# Build artifacts
+*.exe
+*.dll
+*.lib
+*.pdb
+*.obj
+*.ilk
+*.tlog
+*.log
+
+# Visual Studio temporary files
+*.suo
+*.user
+*.VC.db
+*.VC.VC.opendb
+*.ipch
+
+# Output directories
+/[Bb]in/
+/[Oo]bj/
+/[Dd]ebug/
+/[Rr]elease/
+/x64/
+/x86/
+
+# Visual Studio settings and caches
+.vs/
+.vscode/
+
+# System-specific files
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Third-party dependencies (if applicable)
+packages/
